@@ -1,20 +1,17 @@
 package com.checkout.payment.gateway.model;
 
-public class ErrorResponse {
-  private final String message;
+import com.checkout.payment.gateway.enums.PaymentStatus;
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import java.util.List;
 
-  public ErrorResponse(String message) {
-    this.message = message;
-  }
+@JsonInclude(JsonInclude.Include.NON_NULL)
+public record ErrorResponse(
+    PaymentStatus status,
+    String code,
+    String message,
+    @JsonProperty("request_id") String requestId,
+    List<ErrorDetail> details) {
 
-  public String getMessage() {
-    return message;
-  }
-
-  @Override
-  public String toString() {
-    return "ErrorResponse{" +
-        "message='" + message + '\'' +
-        '}';
-  }
+  public record ErrorDetail(String field, String message) {}
 }
