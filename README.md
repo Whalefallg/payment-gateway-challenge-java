@@ -1,27 +1,20 @@
 # Payment Gateway Challenge
 
-一个基于 Java 17 和 Spring Boot 的简化支付网关。它校验商户请求，将有效请求转发给题目提供的银行模拟器，并以内存方式保存可查询的 Authorized 或 Declined 结果。
+## Overview
 
-本项目仅用于技术评估，不适用于生产环境，也未经过 PCI DSS 评估或认证。
+A simplified payment gateway built with Java 17 and Spring Boot for the
+[Checkout.com engineering assessment](https://github.com/cko-recruitment/.github/blob/main/profile/README.md).
+It validates merchant requests, forwards valid requests to the supplied bank simulator,
+and stores definitive Authorized or Declined outcomes in memory. The API exposes
+`POST /payments` and `GET /payments/{id}`.
 
-## 架构
+## Quick Start
 
-```text
-Merchant -> PaymentGatewayController -> PaymentGatewayService -> BankClient -> Bank simulator
-                                      \-> PaymentsRepository (ConcurrentHashMap)
-```
+Requirements: JDK 17 and Docker with Docker Compose for the bank simulator.
+The examples and smoke script also use Bash, Python 3, and curl with `--fail-with-body`
+support. Gradle is provided through the wrapper; automated tests do not require Docker.
 
-- Controller 负责 HTTP 契约和 Bean Validation。
-- Service 负责流程编排、生成 UUID、构造脱敏记录。
-- BankClient 独立负责银行线协议、超时和上游错误分类。
-- Repository 仅保存不可变的脱敏 `PaymentRecord`，不保存完整 PAN 或 CVV。
-
-## 环境要求
-
-- JDK 17
-- Docker 与 Docker Compose（仅真实模拟器冒烟测试需要）
-
-## 构建、测试和启动
+From the repository root:
 
 ```bash
 ./gradlew clean build
@@ -29,41 +22,42 @@ docker compose up -d
 ./gradlew bootRun
 ```
 
-Gateway 默认监听 `http://localhost:8090`，银行模拟器监听 `http://localhost:8080`。Swagger UI 位于：
+Wait for the application to start. The gateway listens on `http://localhost:8090`
+and the bank simulator on `http://localhost:8080`.
+[Swagger UI](http://localhost:8090/swagger-ui/index.html) documents the endpoints.
+`bootRun` stays in the foreground; run the examples and smoke script in a second terminal.
+Stop the gateway with Ctrl+C and the simulator with `docker compose down` when finished.
 
-```text
-http://localhost:8090/swagger-ui/index.html
+| Environment variable | Default | Purpose |
+|---|---|---|
+| `BANK_BASE_URL` | `http://localhost:8080` | Bank base URL; the client appends `/payments` |
+| `BANK_CONNECT_TIMEOUT` | `2s` | Connection timeout |
+| `BANK_READ_TIMEOUT` | `2s` | Read timeout |
+
+## API Examples
+
+Use the following synthetic card data only with the simulator. This example chooses
+a future expiry year and retains the returned ID for the subsequent GET:
+
+```bash
+expiry_year="$(python3 -c 'from datetime import datetime, timezone; print(datetime.now(timezone.utc).year + 2)')"
+payment_response="$(curl --fail-with-body --silent --show-error \
+  -H 'Content-Type: application/json' \
+  -d "{\"card_number\":\"2222405343240001\",\"expiry_month\":12,\"expiry_year\":$expiry_year,\"currency\":\"GBP\",\"amount\":1050,\"cvv\":\"007\"}" \
+  http://localhost:8090/payments)"
+printf '%s\n' "$payment_response"
+payment_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$payment_response")"
+curl --fail-with-body --silent --show-error "http://localhost:8090/payments/$payment_id"
 ```
 
-配置项均可由环境变量覆盖：
-
-| 配置 | 环境变量 | 默认值 |
-|---|---|---|
-| 银行地址 | `BANK_BASE_URL` | `http://localhost:8080` |
-| 连接超时 | `BANK_CONNECT_TIMEOUT` | `2s` |
-| 读取超时 | `BANK_READ_TIMEOUT` | `2s` |
-
-## API
-
-### 创建支付
+`amount` is expressed in minor currency units: `1050` GBP means **£10.50**.
+For a request with expiry year 2028, a representative POST response is:
 
 ```http
-POST /payments
-Content-Type: application/json
+HTTP/1.1 201 Created
+Location: /payments/550e8400-e29b-41d4-a716-446655440000
+X-Request-ID: 7ac6c963-c974-44be-a5c1-11f315497808
 ```
-
-```json
-{
-  "card_number": "2222405343240001",
-  "expiry_month": 12,
-  "expiry_year": 2028,
-  "currency": "GBP",
-  "amount": 1050,
-  "cvv": "007"
-}
-```
-
-Authorized 和 Declined 都表示已创建可查询记录，因此均返回 `201 Created`，并设置 `Location: /payments/{id}`。`201` 不表示银行已授权。
 
 ```json
 {
@@ -77,76 +71,138 @@ Authorized 和 Declined 都表示已创建可查询记录，因此均返回 `201
 }
 ```
 
-### 查询支付
+- **Authorized:** the bank explicitly returned `authorized: true`.
+- **Declined:** the bank explicitly returned `authorized: false`.
+- **Rejected:** invalid merchant input was rejected before any bank call.
 
-```http
-GET /payments/{id}
+Authorized and Declined both return **201**, because both create a retrievable payment
+record. Rejected input returns **400** without a payment ID or stored record.
+GET returns **200** with the same stored business fields and ID; it neither calls the
+bank nor revalidates a historical payment's expiry. Each independently processed POST
+gets a new UUID, including repeated submissions of the same request.
+
+The official simulator uses the final card digit: `1/3/5/7/9` authorizes,
+`2/4/6/8` declines, and `0` returns a bank HTTP 503. These are simulator rules,
+not card-network validation rules.
+
+## Architecture
+
+```text
+Merchant -> PaymentGatewayController -> PaymentGatewayService -> BankClient -> Bank simulator
+                                       |
+                                       +-> PaymentsRepository (ConcurrentHashMap)
 ```
 
-返回与创建时相同的业务字段；未知 UUID 返回 `404`，非法 UUID 语法返回 `400`。查询历史记录不会再次调用银行，也不会重新校验有效期。
+- **Controller:** HTTP routing, request validation and response status/headers.
+- **Service:** calls the bank, maps definitive outcomes, generates a UUID and stores a
+  sanitized `PaymentRecord`; maps stored records to the shared POST/GET `PaymentResponse`.
+- **BankClient:** sends `card_number`, `expiry_date` (`MM/yyyy`), `currency`, `amount`
+  and `cvv`; checks the bank response and classifies transport/protocol failures.
+- **Repository:** stores immutable records containing only the card's last four digits
+  alongside the payment result, expiry, currency and amount.
 
-## 校验规则
+## Validation and Error Handling
 
-- `card_number`：字符串，14–19 位 ASCII 数字。
-- `expiry_month`：JSON 整数，1–12。
-- `expiry_year`：四位 JSON 整数；组合后的 `YearMonth` 必须严格晚于当前 UTC 月，当前月无效。
-- `currency`：精确匹配 `USD`、`GBP` 或 `EUR`；不转换大小写、不裁剪空格。
-- `amount`：32 位 JSON 整数。按题目保守解释允许零和负数；这不是生产支付产品的建议。
-- `cvv`：字符串，3–4 位 ASCII 数字，保留前导零。
+All request fields are required; missing values and explicit `null` are rejected.
 
-Jackson 禁止标量强制转换和浮点数转整数，因此字符串金额、浮点/科学计数法金额、数字 PAN/CVV、整数溢出、缺失字段和 `null` 均返回 `400`，且不会调用银行。
+| Field | Implemented validation |
+|---|---|
+| `card_number` | String of 14–19 ASCII digits; no Luhn or card-brand check |
+| `expiry_month` | JSON integer, 1–12 |
+| `expiry_year` | JSON integer, 1000–9999; combined year/month strictly after the current UTC month |
+| `currency` | Exactly `USD`, `GBP` or `EUR`; no trimming or case conversion |
+| `amount` | Signed 32-bit JSON integer in minor currency units; zero and negative values accepted |
+| `cvv` | String of 3–4 ASCII digits; leading zeros preserved |
 
-## 错误契约
+Strict Jackson configuration rejects numeric PAN/CVV, string amounts, fractional or
+scientific-notation amounts, and integer overflow before the bank is called.
 
-错误响应包含稳定的 `code`、安全的 `message` 和服务端生成的 `request_id`。仅商户 POST 校验失败包含 `status: Rejected`。
-
-| 情况 | HTTP | code |
+| Condition | HTTP | Error `code` |
 |---|---:|---|
-| 无效或格式错误的 POST | 400 | `INVALID_PAYMENT_REQUEST` |
-| 非法 UUID | 400 | `INVALID_PAYMENT_ID` |
-| 支付不存在 | 404 | `PAYMENT_NOT_FOUND` |
-| 银行不可用/拒绝连接 | 503 | `BANK_UNAVAILABLE` |
-| 银行连接或读取超时 | 504 | `BANK_TIMEOUT` |
-| 银行响应无效或非预期 | 502 | `BANK_RESPONSE_INVALID` |
-| 未预期应用故障 | 500 | `INTERNAL_ERROR` |
+| Invalid POST input, including malformed JSON | 400 | `INVALID_PAYMENT_REQUEST` |
+| Invalid payment UUID syntax | 400 | `INVALID_PAYMENT_ID` |
+| Unknown payment ID | 404 | `PAYMENT_NOT_FOUND` |
+| Unsupported method | 405 | `METHOD_NOT_ALLOWED` |
+| Unsupported content type | 415 | `UNSUPPORTED_MEDIA_TYPE` |
+| Invalid/unexpected bank response | 502 | `BANK_RESPONSE_INVALID` |
+| Bank HTTP 503 or non-timeout connection failure | 503 | `BANK_UNAVAILABLE` |
+| Bank timeout | 504 | `BANK_TIMEOUT` |
+| Unexpected application failure | 500 | `INTERNAL_ERROR` |
 
-银行的 HTTP 503、超时、传输失败或歧义响应绝不会伪装成 Declined 或 Rejected，也不会创建记录。支付请求不会自动重试，因为超时后真实授权状态可能不确定。
+Only HTTP 200 with an explicit boolean `authorized` produces a payment result.
+Upstream failures create no record and are never converted into Declined or Rejected.
+Protocol errors retain Spring's standard headers, including `Allow` for HTTP 405.
 
-## 银行模拟器与冒烟测试
+Example invalid-input response:
 
-模拟器按卡号末位返回确定结果：奇数 Authorized，非零偶数 Declined，零返回 503。Gateway 发出的字段为完整 PAN、`MM/yyyy`、currency、整数 amount 和字符串 CVV；敏感值只存在于处理当前调用所需的内存对象中。
+```json
+{
+  "status": "Rejected",
+  "code": "INVALID_PAYMENT_REQUEST",
+  "message": "Payment request validation failed",
+  "request_id": "7ac6c963-c974-44be-a5c1-11f315497808",
+  "details": [{"field": "expiry_month", "message": "must be between 1 and 12"}]
+}
+```
 
-启动模拟器和 Gateway 后运行：
+`details` is omitted when safe field-level errors are unavailable. GET, protocol and
+upstream errors omit the business `status`. Every request receives a server-generated
+`X-Request-ID`, used in error responses and MDC logging, then removed from MDC in `finally`.
+
+## Testing
+
+```bash
+./gradlew test
+```
+
+- **Controller tests:** raw JSON parsing, validation boundaries, HTTP contracts and
+  rejection before calling the mocked BankClient.
+- **Service tests:** independent payment IDs, sanitized storage and no record on bank failure.
+- **BankClient tests:** outbound wire format, boolean outcomes, invalid responses, HTTP
+  errors, connection refusal and a real local HTTP read timeout with one outbound request.
+- **Expiry validator test:** December-to-January rollover with a fixed UTC clock.
+- **Application-context integration tests:** MockMvc drives the real MVC, validation,
+  service, client and repository; the client uses real HTTP to a local bank stub.
+  They check POST→GET, invalid-input isolation and captured logs for PAN/CVV leakage.
+
+These tests do not start a gateway network listener. To exercise the running gateway
+and the official bank simulator, start both as above, then run in a second terminal:
 
 ```bash
 ./scripts/smoke-test.sh
 ```
 
-脚本需要 `curl` 和 `python3`，验证 Authorized/GET、Declined/GET、银行 503 和无效商户请求。
+The script checks Authorized/GET, Declined/GET, bank 503 and invalid-input 400.
+Set `GATEWAY_URL` if the gateway is not at `http://localhost:8090`.
 
-## 可观测性与安全
+## Design Decisions and Trade-offs
 
-- 每次请求生成新的关联 ID，通过 `X-Request-ID` 返回并在 MDC 中使用；请求结束后在 `finally` 中清理。
-- 日志仅记录方法、路径、状态、耗时、银行结果或安全错误分类。
-- 不记录原始请求体、完整 PAN、CVV、银行请求/响应体或不安全异常消息。
-- 公共响应和内存记录仅保留卡号后四位；异常响应不回显拒绝值或解析器消息。
-- Declined 是正常业务结果，不作为应用错误记录。
+- **In-memory storage:** the assignment permits a repository test double.
+  `ConcurrentHashMap` supports the individual concurrent reads/writes used here, but
+  records disappear on restart and are not shared across instances. The bank call and
+  local write are not atomic; a crash between them can lose the local result.
+- **No automatic retries:** a timeout leaves the bank's authorization outcome uncertain.
+  Retrying could duplicate a payment. This implementation returns an infrastructure
+  error without inventing a payment outcome; duplicate-request protection is not implemented.
+- **Sensitive data:** full PAN and CVV are used for the outbound bank call but excluded
+  from stored records and public responses. Application logging uses request metadata,
+  timing and controlled error categories rather than payloads or raw exception contents.
+  Request DTOs have no value-printing `toString()`. This does not guarantee immediate
+  erasure of sensitive strings from JVM memory.
+- **Amount:** the assignment requires an integer but specifies no positivity constraint.
+  Accepting zero and negative integers is a deliberate exercise-specific interpretation,
+  not a recommendation for a real payment product.
+- **Expiry:** this implementation interprets “in the future” as strictly after the
+  current UTC month, so the current month is rejected. This is an explicit assumption;
+  production card-validity rules may differ.
+- **Scope:** a concrete BankClient and direct record mapping keep the two-endpoint
+  solution small. Extra interfaces, mapping frameworks and a payment state machine
+  are not needed for the implemented flow. The 201/error mappings and exact currency
+  whitelist are implementation choices rather than additional official requirements.
 
-## 测试
+## Production Considerations
 
-```bash
-./gradlew test
-./gradlew clean build
-```
-
-普通自动化测试不依赖 Docker，包括原始 JSON MockMvc 校验、BankClient 线协议、受控本地 HTTP 读超时、Service 生命周期，以及真实 MVC→Jackson→Validation→Service→BankClient→HTTP stub→Repository 的完整应用上下文路径。
-
-## 设计取舍与限制
-
-- 使用 `ConcurrentHashMap` 保持题目规模简单；它不持久化、不支持崩溃恢复或多实例共享。
-- 独立 BankClient 隔离敏感的上游协议和错误分类，无需额外接口或大型映射框架。
-- 只有 Authorized/Declined 两种持久化业务状态，因此没有引入复杂状态机。
-- 每次 POST 都是独立支付并生成新 UUID；没有幂等、重复支付保护或自动去重。
-- 不自动重试银行请求；超时结果可能已在银行完成，需生产系统的查询或对账机制解决。
-- 没有持久化存储、商户认证、资源所有权授权、端到端幂等、崩溃恢复或对账。
-- 该实现未容器化 Gateway，也未增加监控基础设施，以保持 take-home 范围聚焦。
+A production system would need durable storage, merchant authentication and resource
+authorization, end-to-end idempotency, and recovery/reconciliation of uncertain outcomes.
+Its handling of card data would also require a PCI DSS assessment. This submission is
+not production-ready and has not been assessed or certified for PCI DSS compliance.

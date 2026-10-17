@@ -22,7 +22,7 @@ public class RequestCorrelationFilter extends OncePerRequestFilter {
   protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
       FilterChain filterChain) throws ServletException, IOException {
     String requestId = UUID.randomUUID().toString();
-    long started = System.nanoTime();
+    long startNanos = System.nanoTime();
     MDC.put("request_id", requestId);
     response.setHeader(HEADER, requestId);
     try {
@@ -30,7 +30,7 @@ public class RequestCorrelationFilter extends OncePerRequestFilter {
     } finally {
       LOG.info("Request completed method={} path={} status={} duration_ms={}",
           request.getMethod(), request.getRequestURI(), response.getStatus(),
-          (System.nanoTime() - started) / 1_000_000);
+          (System.nanoTime() - startNanos) / 1_000_000);
       MDC.remove("request_id");
     }
   }

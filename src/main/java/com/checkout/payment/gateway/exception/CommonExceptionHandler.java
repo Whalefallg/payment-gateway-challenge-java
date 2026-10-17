@@ -43,38 +43,40 @@ public class CommonExceptionHandler {
 
   @ExceptionHandler(MethodArgumentTypeMismatchException.class)
   public ResponseEntity<ErrorResponse> handleInvalidId(MethodArgumentTypeMismatchException ex) {
-    return ResponseEntity.badRequest().body(error("INVALID_PAYMENT_ID", "Payment ID is invalid"));
+    return ResponseEntity.badRequest()
+        .body(errorResponse("INVALID_PAYMENT_ID", "Payment ID is invalid"));
   }
 
   @ExceptionHandler(GatewayException.class)
   public ResponseEntity<ErrorResponse> handleGateway(GatewayException ex) {
-    LOG.warn("Request failed category={}", ex.getCode());
-    return ResponseEntity.status(ex.getStatus()).body(error(ex.getCode(), ex.getSafeMessage()));
+    LOG.warn("Request failed category={}", ex.getErrorCode());
+    return ResponseEntity.status(ex.getHttpStatus())
+        .body(errorResponse(ex.getErrorCode(), ex.getSafeMessage()));
   }
 
   @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
   public ResponseEntity<ErrorResponse> handleMethodNotAllowed(HttpRequestMethodNotSupportedException ex) {
     return ResponseEntity.status(ex.getStatusCode())
         .headers(ex.getHeaders())
-        .body(error("METHOD_NOT_ALLOWED", "HTTP method is not supported"));
+        .body(errorResponse("METHOD_NOT_ALLOWED", "HTTP method is not supported"));
   }
 
   @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
   public ResponseEntity<ErrorResponse> handleUnsupportedMediaType(HttpMediaTypeNotSupportedException ex) {
     return ResponseEntity.status(ex.getStatusCode())
         .headers(ex.getHeaders())
-        .body(error("UNSUPPORTED_MEDIA_TYPE", "Content type is not supported"));
+        .body(errorResponse("UNSUPPORTED_MEDIA_TYPE", "Content type is not supported"));
   }
 
   @ExceptionHandler(Exception.class)
   public ResponseEntity<ErrorResponse> handleUnexpected(Exception ex) {
     LOG.error("Unexpected application failure request_id={}", requestId());
     return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-        .body(error("INTERNAL_ERROR", "An unexpected error occurred"));
+        .body(errorResponse("INTERNAL_ERROR", "An unexpected error occurred"));
   }
 
-  private static ErrorResponse error(String code, String message) {
-    return new ErrorResponse(null, code, message, requestId(), null);
+  private static ErrorResponse errorResponse(String errorCode, String message) {
+    return new ErrorResponse(null, errorCode, message, requestId(), null);
   }
 
   private static String requestId() {

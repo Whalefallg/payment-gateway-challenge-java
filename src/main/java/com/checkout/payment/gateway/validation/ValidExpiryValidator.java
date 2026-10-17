@@ -17,6 +17,7 @@ public class ValidExpiryValidator implements ConstraintValidator<ValidExpiry, Po
 
   @Override
   public boolean isValid(PostPaymentRequest value, ConstraintValidatorContext context) {
+    // Required-field constraints handle missing dates; this validator checks the combination.
     if (value == null || value.getExpiryMonth() == null || value.getExpiryYear() == null) {
       return true;
     }
@@ -26,6 +27,7 @@ public class ValidExpiryValidator implements ConstraintValidator<ValidExpiry, Po
         return true;
       }
     } catch (DateTimeException ignored) {
+      // Field range constraints report invalid date components.
       return true;
     }
     context.disableDefaultConstraintViolation();

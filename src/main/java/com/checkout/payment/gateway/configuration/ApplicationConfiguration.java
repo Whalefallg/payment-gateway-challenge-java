@@ -35,6 +35,7 @@ public class ApplicationConfiguration {
 
   @Bean
   public Jackson2ObjectMapperBuilderCustomizer strictJsonTypes() {
+    // Reject wrong JSON token types before coercion can hide them from Bean Validation.
     return builder -> builder
         .featuresToDisable(MapperFeature.ALLOW_COERCION_OF_SCALARS)
         .featuresToDisable(DeserializationFeature.ACCEPT_FLOAT_AS_INT)

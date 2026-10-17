@@ -8,7 +8,7 @@ import java.util.List;
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record ErrorResponse(
     PaymentStatus status,
-    String code,
+    @JsonProperty("code") String errorCode,
     String message,
     @JsonProperty("request_id") String requestId,
     List<ErrorDetail> details) {

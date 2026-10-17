@@ -31,11 +31,14 @@ public class PaymentGatewayService {
   }
 
   public PaymentResponse processPayment(PostPaymentRequest request) {
+    // Create a record only after a definitive bank result; upstream failures leave no record.
     BankOutcome bankOutcome = bankClient.process(request);
-    PaymentStatus status = bankOutcome == BankOutcome.AUTHORIZED
-        ? PaymentStatus.AUTHORIZED : PaymentStatus.DECLINED;
+    PaymentStatus paymentStatus = switch (bankOutcome) {
+      case AUTHORIZED -> PaymentStatus.AUTHORIZED;
+      case DECLINED -> PaymentStatus.DECLINED;
+    };
     PaymentRecord record = new PaymentRecord(
-        UUID.randomUUID(), status,
+        UUID.randomUUID(), paymentStatus,
         request.getCardNumber().substring(request.getCardNumber().length() - 4),
         request.getExpiryMonth(), request.getExpiryYear(), request.getCurrency(), request.getAmount());
     paymentsRepository.add(record);

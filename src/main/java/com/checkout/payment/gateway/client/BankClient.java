@@ -39,7 +39,7 @@ public class BankClient {
         request.getCurrency(), request.getAmount(), request.getCvv());
     HttpHeaders headers = new HttpHeaders();
     headers.setContentType(MediaType.APPLICATION_JSON);
-    long started = System.nanoTime();
+    long startNanos = System.nanoTime();
     try {
       ResponseEntity<JsonNode> response = restTemplate.exchange(
           paymentsUrl, HttpMethod.POST, new HttpEntity<>(bankRequest, headers), JsonNode.class);
@@ -48,32 +48,37 @@ public class BankClient {
       }
       JsonNode body = response.getBody();
       JsonNode authorized = body == null ? null : body.get("authorized");
+      // An absent or malformed authorization result must not become a business decline.
       if (authorized == null || !authorized.isBoolean()) {
         throw invalidResponse();
       }
       BankOutcome outcome = authorized.booleanValue() ? BankOutcome.AUTHORIZED : BankOutcome.DECLINED;
-      LOG.info("Bank call completed outcome={} duration_ms={}", outcome, elapsedMillis(started));
+      LOG.info("Bank call completed outcome={} duration_ms={}", outcome, elapsedMillis(startNanos));
       return outcome;
     } catch (GatewayException ex) {
-      LOG.warn("Bank call failed category={} duration_ms={}", ex.getCode(), elapsedMillis(started));
+      LOG.warn("Bank call failed category={} duration_ms={}", ex.getErrorCode(),
+          elapsedMillis(startNanos));
       throw ex;
     } catch (HttpStatusCodeException ex) {
       GatewayException mapped = ex.getStatusCode().value() == 503 ? unavailable() : invalidResponse();
-      LOG.warn("Bank call failed category={} duration_ms={}", mapped.getCode(), elapsedMillis(started));
+      LOG.warn("Bank call failed category={} duration_ms={}", mapped.getErrorCode(),
+          elapsedMillis(startNanos));
       throw mapped;
     } catch (ResourceAccessException ex) {
       GatewayException mapped = hasTimeoutCause(ex) ? timeout() : unavailable();
-      LOG.warn("Bank call failed category={} duration_ms={}", mapped.getCode(), elapsedMillis(started));
+      LOG.warn("Bank call failed category={} duration_ms={}", mapped.getErrorCode(),
+          elapsedMillis(startNanos));
       throw mapped;
     } catch (RestClientException ex) {
       GatewayException mapped = invalidResponse();
-      LOG.warn("Bank call failed category={} duration_ms={}", mapped.getCode(), elapsedMillis(started));
+      LOG.warn("Bank call failed category={} duration_ms={}", mapped.getErrorCode(),
+          elapsedMillis(startNanos));
       throw mapped;
     }
   }
 
-  private static long elapsedMillis(long started) {
-    return (System.nanoTime() - started) / 1_000_000;
+  private static long elapsedMillis(long startNanos) {
+    return (System.nanoTime() - startNanos) / 1_000_000;
   }
 
   private static boolean hasTimeoutCause(Throwable error) {

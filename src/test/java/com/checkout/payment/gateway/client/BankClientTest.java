@@ -62,8 +62,8 @@ class BankClientTest {
         new Response(204, "") , new Response(400, "{\"unsafe\":\"pan\"}")}) {
       GatewayException ex = assertThrows(GatewayException.class,
           () -> invokeWithResponse(response.status(), response.body()));
-      assertEquals("BANK_RESPONSE_INVALID", ex.getCode());
-      assertEquals(HttpStatus.BAD_GATEWAY, ex.getStatus());
+      assertEquals("BANK_RESPONSE_INVALID", ex.getErrorCode());
+      assertEquals(HttpStatus.BAD_GATEWAY, ex.getHttpStatus());
     }
   }
 
@@ -71,8 +71,8 @@ class BankClientTest {
   void maps503ToUnavailable() {
     GatewayException ex = assertThrows(GatewayException.class,
         () -> invokeWithResponse(503, "{}"));
-    assertEquals("BANK_UNAVAILABLE", ex.getCode());
-    assertEquals(HttpStatus.SERVICE_UNAVAILABLE, ex.getStatus());
+    assertEquals("BANK_UNAVAILABLE", ex.getErrorCode());
+    assertEquals(HttpStatus.SERVICE_UNAVAILABLE, ex.getHttpStatus());
   }
 
   @Test
@@ -86,7 +86,7 @@ class BankClientTest {
     GatewayException ex = assertThrows(GatewayException.class,
         () -> new BankClient(restTemplate, "http://127.0.0.1:" + unusedPort)
             .process(request("2222405343240001")));
-    assertEquals("BANK_UNAVAILABLE", ex.getCode());
+    assertEquals("BANK_UNAVAILABLE", ex.getErrorCode());
   }
 
   @Test
@@ -114,7 +114,7 @@ class BankClientTest {
       GatewayException ex = assertThrows(GatewayException.class,
           () -> new BankClient(restTemplate, "http://127.0.0.1:" + server.getAddress().getPort())
               .process(request("2222405343240001")));
-      assertEquals("BANK_TIMEOUT", ex.getCode());
+      assertEquals("BANK_TIMEOUT", ex.getErrorCode());
       assertEquals(1, calls.get());
     } finally {
       server.stop(0);
