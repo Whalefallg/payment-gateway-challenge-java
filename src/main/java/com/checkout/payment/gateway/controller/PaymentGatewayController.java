@@ -3,13 +3,13 @@ package com.checkout.payment.gateway.controller;
 import com.checkout.payment.gateway.model.PaymentResponse;
 import com.checkout.payment.gateway.model.PostPaymentRequest;
 import com.checkout.payment.gateway.service.PaymentGatewayService;
-import jakarta.validation.Valid;
 import java.net.URI;
 import java.util.UUID;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -24,8 +24,12 @@ public class PaymentGatewayController {
 
   @PostMapping("/payments")
   public ResponseEntity<PaymentResponse> processPayment(
-      @Valid @RequestBody PostPaymentRequest request) {
-    PaymentResponse response = paymentGatewayService.processPayment(request);
+      @RequestBody PostPaymentRequest request,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      @RequestHeader(value = "X-Merchant-ID", defaultValue = PaymentGatewayService.DEFAULT_MERCHANT)
+      String merchantId) {
+    PaymentResponse response = paymentGatewayService.processPayment(
+        request, idempotencyKey, merchantId);
     return ResponseEntity.created(URI.create("/payments/" + response.id())).body(response);
   }
 

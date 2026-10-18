@@ -4,6 +4,7 @@ import static org.hamcrest.Matchers.hasSize;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -276,6 +277,49 @@ class PaymentGatewayControllerTest {
         .andExpect(jsonPath("$.status").doesNotExist())
         .andExpect(jsonPath("$.request_id").isNotEmpty());
     org.junit.jupiter.api.Assertions.assertEquals(0, repository.size());
+  }
+
+  @Test
+  void keyedTimeoutCreatesQueryableUnknownAndReplayDoesNotReauthorize() throws Exception {
+    when(bankClient.process(any())).thenThrow(new GatewayException(
+        HttpStatus.GATEWAY_TIMEOUT, "BANK_TIMEOUT", "Bank request timed out"));
+    MvcResult failed = mvc.perform(post("/payments")
+            .header("Idempotency-Key", "timeout-key")
+            .contentType(MediaType.APPLICATION_JSON).content(validJson(1)))
+        .andExpect(status().isGatewayTimeout())
+        .andExpect(jsonPath("$.status").value("Unknown"))
+        .andExpect(jsonPath("$.payment_id").isNotEmpty())
+        .andExpect(jsonPath("$.card_number").doesNotExist())
+        .andExpect(jsonPath("$.cvv").doesNotExist())
+        .andReturn();
+    String id = com.jayway.jsonpath.JsonPath.read(
+        failed.getResponse().getContentAsString(), "$.payment_id");
+
+    mvc.perform(get("/payments/{id}", id))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.status").value("Unknown"));
+    mvc.perform(post("/payments")
+            .header("Idempotency-Key", "timeout-key")
+            .contentType(MediaType.APPLICATION_JSON).content(validJson(1)))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.id").value(id))
+        .andExpect(jsonPath("$.status").value("Unknown"));
+    verify(bankClient, times(1)).process(any());
+    org.junit.jupiter.api.Assertions.assertEquals(1, repository.size());
+  }
+
+  @Test
+  void changedPayloadForSameKeyReturnsConflictWithoutBankCall() throws Exception {
+    when(bankClient.process(any())).thenReturn(BankOutcome.AUTHORIZED);
+    mvc.perform(post("/payments").header("Idempotency-Key", "conflict-key")
+            .contentType(MediaType.APPLICATION_JSON).content(validJson(1)))
+        .andExpect(status().isCreated());
+    mvc.perform(post("/payments").header("Idempotency-Key", "conflict-key")
+            .contentType(MediaType.APPLICATION_JSON).content(validJson(2)))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("IDEMPOTENCY_CONFLICT"));
+    verify(bankClient, times(1)).process(any());
+    org.junit.jupiter.api.Assertions.assertEquals(1, repository.size());
   }
 
   @Test

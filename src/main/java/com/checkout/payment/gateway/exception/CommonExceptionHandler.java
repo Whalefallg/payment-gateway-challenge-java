@@ -41,6 +41,13 @@ public class CommonExceptionHandler {
         requestId(), null));
   }
 
+  @ExceptionHandler(PaymentValidationException.class)
+  public ResponseEntity<ErrorResponse> handleManualValidation(PaymentValidationException ex) {
+    return ResponseEntity.badRequest().body(new ErrorResponse(
+        PaymentStatus.REJECTED, "INVALID_PAYMENT_REQUEST", "Payment request validation failed",
+        requestId(), ex.getDetails()));
+  }
+
   @ExceptionHandler(MethodArgumentTypeMismatchException.class)
   public ResponseEntity<ErrorResponse> handleInvalidId(MethodArgumentTypeMismatchException ex) {
     return ResponseEntity.badRequest()
@@ -50,8 +57,11 @@ public class CommonExceptionHandler {
   @ExceptionHandler(GatewayException.class)
   public ResponseEntity<ErrorResponse> handleGateway(GatewayException ex) {
     LOG.warn("Request failed category={}", ex.getErrorCode());
-    return ResponseEntity.status(ex.getHttpStatus())
-        .body(errorResponse(ex.getErrorCode(), ex.getSafeMessage()));
+    ErrorResponse response = ex.getPaymentId() == null
+        ? errorResponse(ex.getErrorCode(), ex.getSafeMessage())
+        : new ErrorResponse(ex.getPaymentStatus(), ex.getErrorCode(), ex.getSafeMessage(),
+            requestId(), null, ex.getPaymentId());
+    return ResponseEntity.status(ex.getHttpStatus()).body(response);
   }
 
   @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
