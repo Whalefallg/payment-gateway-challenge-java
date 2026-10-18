@@ -1,8 +1,10 @@
 package com.checkout.payment.gateway.controller;
 
+import com.checkout.payment.gateway.enums.PaymentStatus;
 import com.checkout.payment.gateway.model.PaymentResponse;
 import com.checkout.payment.gateway.model.PostPaymentRequest;
 import com.checkout.payment.gateway.service.PaymentGatewayService;
+import com.checkout.payment.gateway.service.PaymentSubmission;
 import java.net.URI;
 import java.util.UUID;
 import org.springframework.http.ResponseEntity;
@@ -28,9 +30,17 @@ public class PaymentGatewayController {
       @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
       @RequestHeader(value = "X-Merchant-ID", defaultValue = PaymentGatewayService.DEFAULT_MERCHANT)
       String merchantId) {
-    PaymentResponse response = paymentGatewayService.processPayment(
+    PaymentSubmission submission = paymentGatewayService.submitPayment(
         request, idempotencyKey, merchantId);
-    return ResponseEntity.created(URI.create("/payments/" + response.id())).body(response);
+    PaymentResponse response = submission.payment();
+    URI location = URI.create("/payments/" + response.id());
+    if (submission.kind() == PaymentSubmission.Kind.CREATED) {
+      return ResponseEntity.created(location).body(response);
+    }
+    if (response.status() == PaymentStatus.READY || response.status() == PaymentStatus.IN_FLIGHT) {
+      return ResponseEntity.accepted().location(location).body(response);
+    }
+    return ResponseEntity.ok().location(location).body(response);
   }
 
   @GetMapping("/payments/{id}")

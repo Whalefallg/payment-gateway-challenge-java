@@ -24,6 +24,11 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.time.Clock;
 import java.time.YearMonth;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -301,11 +306,61 @@ class PaymentGatewayControllerTest {
     mvc.perform(post("/payments")
             .header("Idempotency-Key", "timeout-key")
             .contentType(MediaType.APPLICATION_JSON).content(validJson(1)))
-        .andExpect(status().isCreated())
+        .andExpect(status().isOk())
         .andExpect(jsonPath("$.id").value(id))
         .andExpect(jsonPath("$.status").value("Unknown"));
     verify(bankClient, times(1)).process(any());
     org.junit.jupiter.api.Assertions.assertEquals(1, repository.size());
+  }
+
+  @Test
+  void terminalReplayReturnsOkWhileInitialCreationRemainsCreated() throws Exception {
+    when(bankClient.process(any())).thenReturn(BankOutcome.AUTHORIZED);
+    MvcResult first = mvc.perform(post("/payments").header("Idempotency-Key", "replay-key")
+            .contentType(MediaType.APPLICATION_JSON).content(validJson(1)))
+        .andExpect(status().isCreated())
+        .andReturn();
+    String id = com.jayway.jsonpath.JsonPath.read(
+        first.getResponse().getContentAsString(), "$.id");
+
+    mvc.perform(post("/payments").header("Idempotency-Key", "replay-key")
+            .contentType(MediaType.APPLICATION_JSON).content(validJson(1)))
+        .andExpect(status().isOk())
+        .andExpect(header().string("Location", "/payments/" + id))
+        .andExpect(jsonPath("$.id").value(id))
+        .andExpect(jsonPath("$.status").value("Authorized"));
+    verify(bankClient, times(1)).process(any());
+  }
+
+  @Test
+  void inProgressReplayReturnsAcceptedAndDoesNotInvokeBankAgain() throws Exception {
+    CountDownLatch bankEntered = new CountDownLatch(1);
+    CountDownLatch releaseBank = new CountDownLatch(1);
+    when(bankClient.process(any())).thenAnswer(invocation -> {
+      bankEntered.countDown();
+      releaseBank.await();
+      return BankOutcome.AUTHORIZED;
+    });
+    ExecutorService executor = Executors.newSingleThreadExecutor();
+    try {
+      Future<MvcResult> initial = executor.submit(() -> mvc.perform(post("/payments")
+              .header("Idempotency-Key", "in-progress-key")
+              .contentType(MediaType.APPLICATION_JSON).content(validJson(1)))
+          .andExpect(status().isCreated()).andReturn());
+      org.junit.jupiter.api.Assertions.assertTrue(bankEntered.await(5, TimeUnit.SECONDS));
+
+      mvc.perform(post("/payments").header("Idempotency-Key", "in-progress-key")
+              .contentType(MediaType.APPLICATION_JSON).content(validJson(1)))
+          .andExpect(status().isAccepted())
+          .andExpect(header().string("Location", org.hamcrest.Matchers.matchesPattern("/payments/.+")))
+          .andExpect(jsonPath("$.status").value("InFlight"));
+      releaseBank.countDown();
+      initial.get(5, TimeUnit.SECONDS);
+      verify(bankClient, times(1)).process(any());
+    } finally {
+      releaseBank.countDown();
+      executor.shutdownNow();
+    }
   }
 
   @Test

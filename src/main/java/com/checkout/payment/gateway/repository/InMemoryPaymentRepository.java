@@ -1,6 +1,7 @@
 package com.checkout.payment.gateway.repository;
 
 import com.checkout.payment.gateway.domain.AttemptStatus;
+import com.checkout.payment.gateway.domain.DefinitiveOutcome;
 import com.checkout.payment.gateway.domain.PaymentAttempt;
 import com.checkout.payment.gateway.domain.PaymentIntent;
 import com.checkout.payment.gateway.domain.PaymentTransitionPolicy;
@@ -74,7 +75,18 @@ public class InMemoryPaymentRepository implements PaymentRepository {
   }
 
   @Override
-  public TransitionResult transition(UUID paymentId, PaymentStatus expected, PaymentStatus target,
+  public TransitionResult claimExecution(UUID paymentId) {
+    return transition(paymentId, PaymentStatus.READY, PaymentStatus.IN_FLIGHT,
+        AttemptStatus.IN_FLIGHT, null, null);
+  }
+
+  @Override
+  public TransitionResult markUnknown(UUID paymentId, String errorCategory) {
+    return transition(paymentId, PaymentStatus.IN_FLIGHT, PaymentStatus.UNKNOWN,
+        AttemptStatus.UNKNOWN, null, errorCategory);
+  }
+
+  private TransitionResult transition(UUID paymentId, PaymentStatus expected, PaymentStatus target,
       AttemptStatus attemptStatus, String bankReference, String errorCategory) {
     AtomicReference<TransitionResult> result = new AtomicReference<>();
     payments.computeIfPresent(paymentId, (id, current) -> {
@@ -98,6 +110,41 @@ public class InMemoryPaymentRepository implements PaymentRepository {
     TransitionResult value = result.get();
     if (value != null) return value;
     throw new IllegalArgumentException("Payment does not exist: " + paymentId);
+  }
+
+  @Override
+  public EvidenceResult applyDefinitiveOutcome(
+      UUID paymentId, DefinitiveOutcome outcome, String bankReference) {
+    AtomicReference<EvidenceResult> result = new AtomicReference<>();
+    payments.computeIfPresent(paymentId, (id, current) -> {
+      PaymentStatus target = outcome.paymentStatus();
+      if (current.status() == target) {
+        result.set(new EvidenceResult(EvidenceResult.Kind.IDEMPOTENT, current));
+        return current;
+      }
+      if (isDefinitive(current.status())) {
+        result.set(new EvidenceResult(EvidenceResult.Kind.CONFLICT, current));
+        return current;
+      }
+      if (!transitions.isAllowed(current.status(), target)) {
+        result.set(new EvidenceResult(EvidenceResult.Kind.NOT_APPLICABLE, current));
+        return current;
+      }
+      Instant now = clock.instant();
+      PaymentAttempt updatedAttempt = current.attempts().get(0).withOutcome(
+          outcome.attemptStatus(), bankReference, null, now);
+      PaymentIntent updated = current.transitionTo(target, updatedAttempt, now);
+      result.set(new EvidenceResult(EvidenceResult.Kind.APPLIED, updated));
+      return updated;
+    });
+    EvidenceResult value = result.get();
+    if (value != null) return value;
+    throw new IllegalArgumentException("Payment does not exist: " + paymentId);
+  }
+
+  private static boolean isDefinitive(PaymentStatus status) {
+    return status == PaymentStatus.AUTHORIZED || status == PaymentStatus.DECLINED
+        || status == PaymentStatus.FAILED_NO_EFFECT;
   }
 
   @Override

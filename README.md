@@ -29,14 +29,19 @@ The gateway listens on `http://localhost:8090`, the supplied simulator on
 | `PAYMENT_FINGERPRINT_SECRET` | random per process | HMAC secret for instrument identity |
 | `PAYMENT_RECOVERY_STALE_AFTER` | `30s` | Age used by the in-memory stale decision service |
 
-For stable idempotency fingerprints throughout one deployment, configure a strong random
-`PAYMENT_FINGERPRINT_SECRET`. Rotating it makes an old key's payload appear different.
-Never log or expose this secret.
+For stable idempotency fingerprints throughout one deployment, configure a random
+`PAYMENT_FINGERPRINT_SECRET` containing at least 32 UTF-8 bytes. Short configured secrets fail
+application startup. When omitted, the process generates 32 random bytes, which is suitable
+only for this non-durable, single-process exercise. Never log or expose the secret, canonical
+payment input, or derived fingerprint.
 
 ## API
 
 The authentication layer is outside this challenge. `X-Merchant-ID` provides a test-only
 merchant scope and defaults to `test-merchant`; it must not be treated as authentication.
+Production must derive merchant identity from authenticated credentials, authorize POST access,
+and enforce resource ownership on every GET. This API is not production-grade multi-tenant
+security.
 
 ```bash
 expiry_year="$(python3 -c 'from datetime import datetime,timezone; print(datetime.now(timezone.utc).year + 2)')"
@@ -66,6 +71,20 @@ another bank request. Reuse the key with a different amount, currency, expiry, o
 the gateway returns `409 IDEMPOTENCY_CONFLICT`. Different merchants may reuse the same key.
 CVV is deliberately excluded from the fingerprint and therefore cannot be used to detect a
 CVV-only change; storing even a derived CVV value would be inappropriate.
+
+POST response status is intentional and covered by tests:
+
+| Situation | HTTP status |
+|---|---:|
+| Newly admitted request with a returned result | `201 Created` |
+| Replay of READY or IN_FLIGHT work | `202 Accepted` |
+| Replay of AUTHORIZED, DECLINED, UNKNOWN, or FAILED_NO_EFFECT | `200 OK` |
+| Same key with different semantics | `409 Conflict` |
+
+`202` does not promise background retry or eventual resolution; it only reports that the one
+claimed invocation is still in progress. `UNKNOWN` is returned as `200` on replay because no
+automatic work remains and the current uncertain state is the retrievable result. Initial mapped
+bank failures retain their existing 502/503/504 error codes for compatibility.
 
 ```bash
 curl http://localhost:8090/payments/550e8400-e29b-41d4-a716-446655440000
@@ -124,6 +143,8 @@ docker compose up -d
 - Raw PAN and CVV necessarily exist transiently in request objects and the outbound bank call.
   They are never stored in payment aggregates; this is not a PCI vault or certification claim.
 - A process-local HMAC identity is a privacy improvement over a plain PAN hash, not tokenization.
+- `X-Merchant-ID` is caller-controlled test input. There is no authentication or GET ownership
+  enforcement in this challenge implementation.
 
 See [docs/V2_CORE_ARCHITECTURE.md](docs/V2_CORE_ARCHITECTURE.md) for the design, failure
 matrix, concurrency reasoning, and PostgreSQL evolution path.

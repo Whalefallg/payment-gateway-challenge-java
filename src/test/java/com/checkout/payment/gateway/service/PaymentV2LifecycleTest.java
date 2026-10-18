@@ -85,7 +85,8 @@ class PaymentV2LifecycleTest {
     when(validator.validate(any(PostPaymentRequest.class))).thenReturn(Set.of(), Set.of(expiryViolation));
     PaymentGatewayService service = new PaymentGatewayService(repository, bank,
         new PaymentExecutionService(repository, bank),
-        new RequestFingerprint("unit-test-fingerprint-secret"), validator);
+        new RequestFingerprint("unit-test-fingerprint-secret-32-bytes"), validator,
+        new DefinitiveEvidenceService(repository));
     PostPaymentRequest sameHistoricalPayload = request(10, "GBP", "0001");
 
     var original = service.processPayment(sameHistoricalPayload, "historical-key", "merchant");

@@ -3,7 +3,6 @@ package com.checkout.payment.gateway.service;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-import com.checkout.payment.gateway.domain.AttemptStatus;
 import com.checkout.payment.gateway.enums.PaymentStatus;
 import com.checkout.payment.gateway.repository.InMemoryPaymentRepository;
 import com.checkout.payment.gateway.repository.PaymentCommand;
@@ -21,8 +20,7 @@ class RecoveryServiceTest {
     InMemoryPaymentRepository repository = new InMemoryPaymentRepository(createdAt);
     var payment = repository.accept("merchant", "key",
         new PaymentCommand("fp", 10, "GBP", "0001", 12, 2030)).payment();
-    repository.transition(payment.paymentId(), PaymentStatus.READY, PaymentStatus.IN_FLIGHT,
-        AttemptStatus.IN_FLIGHT, null, null);
+    repository.claimExecution(payment.paymentId());
     RecoveryService recovery = new RecoveryService(repository,
         Clock.fixed(Instant.parse("2026-01-01T00:01:00Z"), ZoneOffset.UTC),
         Duration.ofSeconds(30));
@@ -42,10 +40,8 @@ class RecoveryServiceTest {
     InMemoryPaymentRepository repository = new InMemoryPaymentRepository();
     var payment = repository.accept("merchant", "key",
         new PaymentCommand("fp", 10, "GBP", "0001", 12, 2030)).payment();
-    repository.transition(payment.paymentId(), PaymentStatus.READY, PaymentStatus.IN_FLIGHT,
-        AttemptStatus.IN_FLIGHT, null, null);
-    repository.transition(payment.paymentId(), PaymentStatus.IN_FLIGHT, PaymentStatus.UNKNOWN,
-        AttemptStatus.UNKNOWN, null, "BANK_TIMEOUT");
+    repository.claimExecution(payment.paymentId());
+    repository.markUnknown(payment.paymentId(), "BANK_TIMEOUT");
     RecoveryService recovery = new RecoveryService(repository, Clock.systemUTC(), Duration.ZERO);
     assertThrows(IllegalStateException.class,
         () -> recovery.refuseUnsafeRetry(payment.paymentId()));

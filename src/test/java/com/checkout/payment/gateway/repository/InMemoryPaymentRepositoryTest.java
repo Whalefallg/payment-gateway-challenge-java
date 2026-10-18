@@ -4,7 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-import com.checkout.payment.gateway.domain.AttemptStatus;
+import com.checkout.payment.gateway.domain.DefinitiveOutcome;
 import com.checkout.payment.gateway.enums.PaymentStatus;
 import java.time.Clock;
 import java.time.Instant;
@@ -73,27 +73,32 @@ class InMemoryPaymentRepositoryTest {
     var two = repository.accept("merchant-two", "key", command("fp", 10, "GBP")).payment();
     assertFalse(one.paymentId().equals(two.paymentId()));
 
-    var won = repository.transition(one.paymentId(), PaymentStatus.READY,
-        PaymentStatus.IN_FLIGHT, AttemptStatus.IN_FLIGHT, null, null);
-    var lost = repository.transition(one.paymentId(), PaymentStatus.READY,
-        PaymentStatus.IN_FLIGHT, AttemptStatus.IN_FLIGHT, null, null);
+    var won = repository.claimExecution(one.paymentId());
+    var lost = repository.claimExecution(one.paymentId());
     assertEquals(true, won.applied());
     assertEquals(false, lost.applied());
     assertEquals(1, won.payment().attempts().size());
   }
 
   @Test
-  void invalidAndTerminalTransitionsAreRejected() {
+  void contradictoryTerminalEvidenceIsReportedAndCannotOverwriteOutcome() {
     InMemoryPaymentRepository repository = repository();
     var payment = repository.accept("merchant", "key", command("fp", 10, "GBP")).payment();
-    assertThrows(IllegalStateException.class, () -> repository.transition(payment.paymentId(),
-        PaymentStatus.READY, PaymentStatus.AUTHORIZED, AttemptStatus.AUTHORIZED, null, null));
-    repository.transition(payment.paymentId(), PaymentStatus.READY,
-        PaymentStatus.IN_FLIGHT, AttemptStatus.IN_FLIGHT, null, null);
-    repository.transition(payment.paymentId(), PaymentStatus.IN_FLIGHT,
-        PaymentStatus.AUTHORIZED, AttemptStatus.AUTHORIZED, null, null);
-    assertEquals(false, repository.transition(payment.paymentId(), PaymentStatus.IN_FLIGHT,
-        PaymentStatus.DECLINED, AttemptStatus.DECLINED, null, null).applied());
+    assertEquals(EvidenceResult.Kind.NOT_APPLICABLE,
+        repository.applyDefinitiveOutcome(payment.paymentId(),
+            DefinitiveOutcome.AUTHORIZED, null).kind());
+    repository.claimExecution(payment.paymentId());
+    assertEquals(EvidenceResult.Kind.APPLIED,
+        repository.applyDefinitiveOutcome(payment.paymentId(),
+            DefinitiveOutcome.AUTHORIZED, null).kind());
+    assertEquals(EvidenceResult.Kind.IDEMPOTENT,
+        repository.applyDefinitiveOutcome(payment.paymentId(),
+            DefinitiveOutcome.AUTHORIZED, null).kind());
+    assertEquals(EvidenceResult.Kind.CONFLICT,
+        repository.applyDefinitiveOutcome(payment.paymentId(),
+            DefinitiveOutcome.DECLINED, null).kind());
+    assertEquals(PaymentStatus.AUTHORIZED,
+        repository.findById(payment.paymentId()).orElseThrow().status());
   }
 
   private InMemoryPaymentRepository repository() {

@@ -26,6 +26,7 @@ PaymentIntent + PaymentAttempt       │
                                 Bank Simulator
 
 RecoveryService ── reads/transitions unresolved snapshots only; never calls BankClient
+DefinitiveEvidenceService ── atomically applies/idempotently compares terminal evidence
 ```
 
 The controller handles HTTP concerns. `PaymentGatewayService` owns application admission and
@@ -62,7 +63,9 @@ identity for correlation/modeling, but the adapter does not pretend the simulato
 
 Neither aggregate stores PAN or CVV. It stores last four digits for display and a keyed HMAC
 fingerprint for admission comparison. CVV is excluded entirely. Aggregate lists are copied and
-all updates replace the whole intent-and-attempt snapshot.
+all updates replace the whole intent-and-attempt snapshot. Aggregate constructors enforce one
+attempt, matching payment IDs, matching payment/attempt statuses, and terminal completion-time
+rules, so invalid combinations cannot be inserted by a repository transition.
 
 ## 4. State machine
 
@@ -75,9 +78,11 @@ IN_FLIGHT -> AUTHORIZED | DECLINED | UNKNOWN
 UNKNOWN -> AUTHORIZED | DECLINED | FAILED_NO_EFFECT
 ```
 
-All other transitions fail. Repository operations also require an expected current state, so
-only one concurrent caller can claim `READY`. Terminal states cannot be overwritten. UNKNOWN
-accepts a result only through controlled definitive-evidence handling.
+All other transitions fail. The repository exposes semantic operations rather than a public
+general transition method: `claimExecution`, `markUnknown`, and `applyDefinitiveOutcome`. Only
+one concurrent caller can claim `READY`. Definitive evidence is applied inside one map compute
+and reports APPLIED, IDEMPOTENT, CONFLICT, or NOT_APPLICABLE. Same outcomes are idempotent;
+contradictory terminal evidence raises an explicit conflict and never overwrites the winner.
 
 ## 5. Idempotency design
 
@@ -87,9 +92,12 @@ payment map, and publishes the index entry. This keeps the two in-memory indexes
 one JVM. Bank I/O never occurs under that lock or in `ConcurrentHashMap.compute`.
 
 The canonical fingerprint covers operation type (`AUTHORIZE`), amount, currency, expiry, and
-PAN-derived identity using HMAC-SHA-256. The configured secret is never logged. With no configured
-secret a strong random process-local value is generated, which correctly emphasizes that this
-store is process-local. CVV-only changes are intentionally indistinguishable. Historical keyed
+PAN-derived identity using HMAC-SHA-256. A configured secret must contain at least 32 UTF-8 bytes
+or startup fails. The configured secret, canonical input, and derived fingerprint are never
+logged. With no configured secret, 32 random process-local bytes are generated, which correctly
+emphasizes that this store is process-local. This HMAC reduces offline PAN-guessing risk compared
+with an unkeyed hash, but it is not tokenization or a PCI vault. CVV is neither included, hashed,
+nor stored, so CVV-only changes are intentionally indistinguishable. Historical keyed
 replay skips only the now-expired-card check; it still requires structurally valid matching
 semantics and never reauthorizes.
 
@@ -98,7 +106,7 @@ semantics and never reauthorizes.
 `ConcurrentHashMap` protects its own map operations. The repository additionally uses:
 
 - one short synchronized section for coordinated payment/idempotency admission;
-- `computeIfPresent` plus expected-state comparison for atomic aggregate transitions;
+- `computeIfPresent` for atomic semantic transitions and evidence arbitration;
 - immutable snapshots so intent and attempt cannot be observed at different versions.
 
 This provides one-JVM atomic admission and state changes. It is not a database transaction,
@@ -137,6 +145,13 @@ outcome. Treating it as Declined would invite a duplicate authorization. `Recove
 Diagnostic categories are fixed safe strings. They contain no request payload, PAN, CVV, or
 derived instrument identity. No scheduled authorization takeover exists.
 
+Mapped bank failures mark the attempt UNKNOWN only if it is still IN_FLIGHT. If trustworthy
+recovery evidence won first, that established result is returned. Unexpected runtime failures at
+the bank invocation boundary are conservatively marked UNKNOWN when possible and then rethrown;
+they are not relabeled as transport errors. A local repository failure is propagated as the
+primary failure with bank failure context suppressed, rather than being disguised as a bank
+failure. Concurrent stale sweeps log and return only the thread whose transition actually applied.
+
 ## 9. In-memory recovery limitations
 
 The recovery service is useful only while the same JVM and map contents remain alive. A process
@@ -171,3 +186,14 @@ exactly once. That requires a compatible downstream protocol and reconciliation.
 - **Kubernetes/microservices** would worsen the deliberately single-JVM coordination model.
 - Capture, refund, settlement, webhooks, outbox, vaulting, and general workflow/state-machine
   frameworks are outside V2-Core scope.
+
+## 12. HTTP and security boundaries
+
+Initial successful POST processing remains `201 Created` for V1 compatibility. A replay returns
+`202 Accepted` only while READY/IN_FLIGHT, and `200 OK` for a retrievable terminal or UNKNOWN
+snapshot. UNKNOWN replay does not imply active processing. GET remains `200` for a found resource.
+
+`X-Merchant-ID` is deliberately retained as a test-only scope input. It is untrusted caller data,
+not authentication. A production gateway must derive the merchant from verified credentials,
+authorize creation, enforce merchant ownership during GET, and audit access. V2-Core must not be
+deployed or described as a secure multi-tenant boundary.
