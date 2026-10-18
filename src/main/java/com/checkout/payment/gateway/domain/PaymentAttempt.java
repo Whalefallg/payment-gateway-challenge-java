@@ -33,4 +33,9 @@ public record PaymentAttempt(
     return new PaymentAttempt(attemptId, paymentId, bankRequestKey, newStatus,
         reference, error, startedAt, completed);
   }
+
+  public PaymentAttempt withBankReference(String reference) {
+    return new PaymentAttempt(attemptId, paymentId, bankRequestKey, status,
+        reference, errorCategory, startedAt, completedAt);
+  }
 }

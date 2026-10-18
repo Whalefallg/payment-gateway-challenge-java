@@ -9,6 +9,7 @@ import com.checkout.payment.gateway.enums.PaymentStatus;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -119,6 +120,18 @@ public class InMemoryPaymentRepository implements PaymentRepository {
     payments.computeIfPresent(paymentId, (id, current) -> {
       PaymentStatus target = outcome.paymentStatus();
       if (current.status() == target) {
+        PaymentAttempt existingAttempt = current.attempts().get(0);
+        String existingReference = existingAttempt.bankReference();
+        if (existingReference == null && bankReference != null) {
+          PaymentIntent enriched = current.replaceAttempt(
+              existingAttempt.withBankReference(bankReference), clock.instant());
+          result.set(new EvidenceResult(EvidenceResult.Kind.ENRICHED, enriched));
+          return enriched;
+        }
+        if (!Objects.equals(existingReference, bankReference) && bankReference != null) {
+          result.set(new EvidenceResult(EvidenceResult.Kind.CONFLICT, current));
+          return current;
+        }
         result.set(new EvidenceResult(EvidenceResult.Kind.IDEMPOTENT, current));
         return current;
       }

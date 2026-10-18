@@ -3,6 +3,7 @@ package com.checkout.payment.gateway.service;
 import com.checkout.payment.gateway.domain.DefinitiveOutcome;
 import com.checkout.payment.gateway.domain.PaymentIntent;
 import com.checkout.payment.gateway.exception.ConflictingPaymentOutcomeException;
+import com.checkout.payment.gateway.exception.ConflictingBankReferenceException;
 import com.checkout.payment.gateway.repository.EvidenceResult;
 import com.checkout.payment.gateway.repository.PaymentRepository;
 import java.util.UUID;
@@ -22,9 +23,14 @@ public class DefinitiveEvidenceService {
     EvidenceResult result = repository.applyDefinitiveOutcome(
         paymentId, observed, bankReference);
     return switch (result.kind()) {
-      case APPLIED, IDEMPOTENT -> result.payment();
-      case CONFLICT -> throw new ConflictingPaymentOutcomeException(paymentId,
-          result.payment().status(), observed.paymentStatus());
+      case APPLIED, ENRICHED, IDEMPOTENT -> result.payment();
+      case CONFLICT -> {
+        if (result.payment().status() == observed.paymentStatus()) {
+          throw new ConflictingBankReferenceException(paymentId);
+        }
+        throw new ConflictingPaymentOutcomeException(paymentId,
+            result.payment().status(), observed.paymentStatus());
+      }
       case NOT_APPLICABLE -> throw new IllegalStateException(
           "Definitive evidence cannot be applied while payment is " + result.payment().status());
     };

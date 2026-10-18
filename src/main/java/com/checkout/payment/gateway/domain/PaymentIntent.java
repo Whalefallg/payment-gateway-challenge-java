@@ -59,4 +59,10 @@ public record PaymentIntent(
         amount, currency, cardNumberLastFour, expiryMonth, expiryYear, target,
         List.of(attempt), createdAt, now, version + 1);
   }
+
+  public PaymentIntent replaceAttempt(PaymentAttempt attempt, Instant now) {
+    return new PaymentIntent(paymentId, merchantId, idempotencyKey, requestFingerprint,
+        amount, currency, cardNumberLastFour, expiryMonth, expiryYear, status,
+        List.of(attempt), createdAt, now, version + 1);
+  }
 }
