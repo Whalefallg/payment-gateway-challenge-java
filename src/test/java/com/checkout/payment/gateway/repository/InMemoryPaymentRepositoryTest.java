@@ -1,9 +1,9 @@
 package com.checkout.payment.gateway.repository;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.checkout.payment.gateway.domain.DefinitiveOutcome;
 import com.checkout.payment.gateway.enums.PaymentStatus;
@@ -96,6 +96,31 @@ class InMemoryPaymentRepositoryTest {
   }
 
   @Test
+  void concurrentOppositeDefinitiveOutcomesHaveOneWinnerAndOneExplicitConflict()
+      throws Exception {
+    InMemoryPaymentRepository repository = repository();
+    PaymentRecord payment = repository.admitAndClaim(
+        "merchant", "key", command("fp", 10, "GBP")).payment();
+    CountDownLatch ready = new CountDownLatch(2);
+    CountDownLatch start = new CountDownLatch(1);
+    Future<Object> authorized = executor.submit(() -> completeAfterStart(
+        repository, payment, DefinitiveOutcome.AUTHORIZED, ready, start));
+    Future<Object> declined = executor.submit(() -> completeAfterStart(
+        repository, payment, DefinitiveOutcome.DECLINED, ready, start));
+    assertTrue(ready.await(5, TimeUnit.SECONDS));
+    start.countDown();
+    List<Object> results = List.of(
+        authorized.get(5, TimeUnit.SECONDS), declined.get(5, TimeUnit.SECONDS));
+
+    assertEquals(1, results.stream().filter(PaymentRecord.class::isInstance).count());
+    assertEquals(1, results.stream()
+        .filter(ConflictingPaymentOutcomeException.class::isInstance).count());
+    PaymentStatus stored = repository.findById(payment.paymentId()).orElseThrow().status();
+    assertEquals(1, results.stream().filter(PaymentRecord.class::isInstance)
+        .map(PaymentRecord.class::cast).filter(result -> result.status() == stored).count());
+  }
+
+  @Test
   void unkeyedDefinitivePersistenceRejectsAdmissionAndCreatesCompletedRecord() {
     InMemoryPaymentRepository repository = repository();
     assertThrows(IllegalArgumentException.class,
@@ -126,6 +151,18 @@ class InMemoryPaymentRepositoryTest {
   private InMemoryPaymentRepository repository() {
     return new InMemoryPaymentRepository(Clock.fixed(
         Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC));
+  }
+
+  private static Object completeAfterStart(InMemoryPaymentRepository repository,
+      PaymentRecord payment, DefinitiveOutcome outcome, CountDownLatch ready,
+      CountDownLatch start) throws InterruptedException {
+    ready.countDown();
+    assertTrue(start.await(5, TimeUnit.SECONDS));
+    try {
+      return repository.complete(payment.paymentId(), outcome);
+    } catch (RuntimeException conflict) {
+      return conflict;
+    }
   }
 
   static PaymentCommand command(String fingerprint, int amount, String currency) {
