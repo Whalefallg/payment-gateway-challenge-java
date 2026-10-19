@@ -2,6 +2,7 @@ package com.checkout.payment.gateway.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -13,9 +14,11 @@ import static org.mockito.Mockito.when;
 import com.checkout.payment.gateway.client.BankClient;
 import com.checkout.payment.gateway.client.BankOutcome;
 import com.checkout.payment.gateway.enums.PaymentStatus;
+import com.checkout.payment.gateway.domain.DefinitiveOutcome;
 import com.checkout.payment.gateway.exception.GatewayException;
 import com.checkout.payment.gateway.idempotency.RequestFingerprint;
 import com.checkout.payment.gateway.model.PaymentRecord;
+import com.checkout.payment.gateway.model.PaymentResponse;
 import com.checkout.payment.gateway.model.PostPaymentRequest;
 import com.checkout.payment.gateway.repository.PaymentAdmissionResult;
 import com.checkout.payment.gateway.repository.InMemoryPaymentRepository;
@@ -25,15 +28,20 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Set;
+import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutionException;
+import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.http.HttpStatus;
 
 class PaymentV2LiteSafetyTest {
@@ -163,6 +171,76 @@ class PaymentV2LiteSafetyTest {
     assertSame(adapterBug, thrown);
     assertEquals(PaymentStatus.UNKNOWN,
         repository.findByIdempotencyKey("merchant", "key").orElseThrow().status());
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  void atomicAdmissionArbitratesWhenBothPrequeriesMiss(boolean changedAmount) throws Exception {
+    CyclicBarrier bothMissed = new CyclicBarrier(2);
+    InMemoryPaymentRepository repository = new InMemoryPaymentRepository(Clock.systemUTC()) {
+      @Override
+      public Optional<PaymentRecord> findByIdempotencyKey(String merchant, String key) {
+        Optional<PaymentRecord> snapshot = super.findByIdempotencyKey(merchant, key);
+        assertTrue(snapshot.isEmpty());
+        try {
+          bothMissed.await(5, TimeUnit.SECONDS);
+        } catch (Exception failure) {
+          throw new IllegalStateException("Concurrent prequeries did not rendezvous", failure);
+        }
+        return snapshot;
+      }
+    };
+    BankClient bank = mock(BankClient.class);
+    when(bank.authorize(any())).thenReturn(BankOutcome.AUTHORIZED);
+    PaymentGatewayService service = service(repository, bank);
+    Callable<Object> firstRequest = () -> submitOrConflict(service, 1);
+    Callable<Object> secondRequest =
+        () -> submitOrConflict(service, changedAmount ? 2 : 1);
+    Future<Object> first = executor.submit(firstRequest);
+    Future<Object> second = executor.submit(secondRequest);
+    List<Object> results = List.of(first.get(5, TimeUnit.SECONDS), second.get(5, TimeUnit.SECONDS));
+
+    assertEquals(changedAmount ? 1 : 0,
+        results.stream().filter(GatewayException.class::isInstance).count());
+    var responses = results.stream()
+        .filter(PaymentResponse.class::isInstance)
+        .map(PaymentResponse.class::cast).toList();
+    assertEquals(1, responses.stream().map(PaymentResponse::id).distinct().count());
+    assertEquals(1, repository.size());
+    verify(bank, times(1)).authorize(any());
+  }
+
+  @Test
+  void localCompletionFailureLeavesInFlightAndReplayDoesNotAuthorizeAgain() {
+    IllegalStateException localFailure = new IllegalStateException("local completion failed");
+    InMemoryPaymentRepository repository = new InMemoryPaymentRepository(Clock.systemUTC()) {
+      @Override
+      public PaymentRecord complete(UUID paymentId, DefinitiveOutcome outcome) {
+        throw localFailure;
+      }
+    };
+    BankClient bank = mock(BankClient.class);
+    when(bank.authorize(any())).thenReturn(BankOutcome.AUTHORIZED);
+    PaymentGatewayService service = service(repository, bank);
+
+    assertSame(localFailure, assertThrows(IllegalStateException.class,
+        () -> service.processPayment(request(1, "0001"), "key", "merchant")));
+    PaymentRecord stored = repository.findByIdempotencyKey("merchant", "key").orElseThrow();
+    assertEquals(PaymentStatus.IN_FLIGHT, stored.status());
+    assertNull(stored.completedAt());
+    assertEquals(PaymentStatus.IN_FLIGHT,
+        service.processPayment(request(1, "0001"), "key", "merchant").status());
+    verify(bank, times(1)).authorize(any());
+  }
+
+  private static Object submitOrConflict(PaymentGatewayService service, int amount) {
+    try {
+      return service.processPayment(request(amount, "0001"), "key", "merchant");
+    } catch (GatewayException conflict) {
+      assertEquals(HttpStatus.CONFLICT, conflict.getHttpStatus());
+      assertEquals("IDEMPOTENCY_CONFLICT", conflict.getErrorCode());
+      return conflict;
+    }
   }
 
   private static InMemoryPaymentRepository repository() {

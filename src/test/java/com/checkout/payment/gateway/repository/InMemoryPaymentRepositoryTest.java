@@ -39,7 +39,7 @@ class InMemoryPaymentRepositoryTest {
     for (int i = 0; i < 16; i++) {
       tasks.add(() -> {
         ready.countDown();
-        start.await(5, TimeUnit.SECONDS);
+        assertTrue(start.await(5, TimeUnit.SECONDS));
         return repository.admitAndClaim("merchant", "same-key", command);
       });
     }

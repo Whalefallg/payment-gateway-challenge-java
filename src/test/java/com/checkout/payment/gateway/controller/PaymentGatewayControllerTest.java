@@ -32,6 +32,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -39,6 +40,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.http.MediaType;
 import org.springframework.http.HttpStatus;
 import org.springframework.test.web.servlet.MockMvc;
@@ -344,12 +347,42 @@ class PaymentGatewayControllerTest {
   }
 
   @Test
+  @ExtendWith(OutputCaptureExtension.class)
+  void unexpectedBankFailureIsSanitizedAndReplayCanFindUnknown(
+      CapturedOutput output) throws Exception {
+    String unsafeMessage = "bank adapter failed PAN=2222405343240001 cvv=007";
+    when(bankClient.authorize(any())).thenThrow(new IllegalStateException(unsafeMessage));
+
+    MvcResult failed = mvc.perform(post("/payments").header("Idempotency-Key", "runtime-key")
+            .contentType(MediaType.APPLICATION_JSON).content(validJson(1)))
+        .andExpect(status().isInternalServerError())
+        .andExpect(jsonPath("$.code").value("INTERNAL_ERROR"))
+        .andExpect(jsonPath("$.payment_id").doesNotExist())
+        .andReturn();
+    String body = failed.getResponse().getContentAsString();
+    org.junit.jupiter.api.Assertions.assertEquals(failed.getResponse().getHeader("X-Request-ID"),
+        objectMapper.readTree(body).get("request_id").asText());
+    for (String sensitive : new String[] {unsafeMessage, "2222405343240001", "cvv=007"}) {
+      org.junit.jupiter.api.Assertions.assertFalse(body.contains(sensitive));
+      org.junit.jupiter.api.Assertions.assertFalse(output.getOut().contains(sensitive));
+    }
+    org.junit.jupiter.api.Assertions.assertNull(org.slf4j.MDC.get("request_id"));
+
+    mvc.perform(post("/payments").header("Idempotency-Key", "runtime-key")
+            .contentType(MediaType.APPLICATION_JSON).content(validJson(1)))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.status").value("Unknown"))
+        .andExpect(jsonPath("$.id").isNotEmpty());
+    verify(bankClient, times(1)).authorize(any());
+  }
+
+  @Test
   void inProgressReplayReturnsAcceptedAndDoesNotInvokeBankAgain() throws Exception {
     CountDownLatch bankEntered = new CountDownLatch(1);
     CountDownLatch releaseBank = new CountDownLatch(1);
     when(bankClient.authorize(any())).thenAnswer(invocation -> {
       bankEntered.countDown();
-      releaseBank.await();
+      org.junit.jupiter.api.Assertions.assertTrue(releaseBank.await(5, TimeUnit.SECONDS));
       return BankOutcome.AUTHORIZED;
     });
     ExecutorService executor = Executors.newSingleThreadExecutor();

@@ -1,147 +1,135 @@
-# Payment Gateway V2-Lite
+# Payment Gateway
 
-A Java 17 / Spring Boot authorization gateway with one immutable payment record,
-merchant-scoped idempotency, atomic in-process execution ownership, and honest handling of
-uncertain bank outcomes. It deliberately retains `ConcurrentHashMap` storage.
+A Java 17 / Spring Boot implementation of the [Checkout.com Payment Gateway Challenge](https://github.com/cko-recruitment/.github/blob/main/profile/README.md). `POST /payments` validates a card payment and requests bank authorization; `GET /payments/{id}` retrieves the result without exposing the full card number or CVV. Normal bank decisions remain `Authorized` and `Declined`.
 
-This is a modular-monolith exercise. It is not a durable or PCI-certified payment system.
+The application is a small modular monolith with an in-memory repository. Optional idempotency prevents duplicate authorization for a retained merchant/key pair. Explicit `Unknown` and `InFlight` states extend the challenge for uncertain or unfinished authorization; they do not provide recovery or an exactly-once payment guarantee.
 
-## Run
+## Run locally
 
-Requirements: JDK 17 and Docker Compose.
+Prerequisites: JDK 17, Docker with Compose and a running daemon. The smoke script also requires Bash, Python 3 and curl. Gradle uses the included wrapper; automated tests run without Docker. Ports 8090 (gateway), 8080 (bank) and 2525 (simulator administration) must be available.
+
+The final implementation is on `feature/payment-gateway-v2`; the repository's default `main` branch contains the starter project.
 
 ```bash
-./gradlew clean test
+git clone --branch feature/payment-gateway-v2 https://github.com/Whalefallg/payment-gateway-challenge-java.git
+cd payment-gateway-challenge-java
+./gradlew clean build
 docker compose up -d
 ./gradlew bootRun
 ```
 
-The gateway listens on `http://localhost:8090`, the supplied simulator on
-`http://localhost:8080`, and Swagger UI is at
-`http://localhost:8090/swagger-ui/index.html`.
+Keep `bootRun` running and use a second terminal for API examples and smoke tests. Swagger UI is at <http://localhost:8090/swagger-ui/index.html>. Stop the gateway with Ctrl-C and the simulator with `docker compose down`.
 
 | Environment variable | Default | Purpose |
-|---|---|---|
-| `BANK_BASE_URL` | `http://localhost:8080` | Bank base URL |
-| `BANK_CONNECT_TIMEOUT` | `2s` | Bank connection timeout |
-| `BANK_READ_TIMEOUT` | `2s` | Bank response timeout |
-| `PAYMENT_FINGERPRINT_SECRET` | random per process | HMAC secret for instrument identity |
+| --- | --- | --- |
+| `BANK_BASE_URL` | `http://localhost:8080` | Bank simulator URL |
+| `BANK_CONNECT_TIMEOUT` | `2s` | Connection timeout |
+| `BANK_READ_TIMEOUT` | `2s` | Response timeout |
+| `PAYMENT_FINGERPRINT_SECRET` | Random per process | HMAC key |
 
-For stable idempotency fingerprints throughout one deployment, configure a random
-`PAYMENT_FINGERPRINT_SECRET` containing at least 32 UTF-8 bytes. Short configured secrets fail
-application startup. When omitted, the process generates 32 random bytes, which is suitable
-only for this non-durable, single-process exercise. Never log or expose the secret, canonical
-payment input, or derived fingerprint.
+The generated HMAC key remains stable for the lifetime of the in-memory store. A configured secret must contain at least 32 UTF-8 bytes; use a securely generated random value. This length check does not measure entropy. A shared secret alone does not provide shared storage or multi-instance idempotency.
 
-## API
+## Create and retrieve a payment
 
-The authentication layer is outside this challenge. `X-Merchant-ID` provides a test-only
-merchant scope and defaults to `test-merchant`; it must not be treated as authentication.
-Production must derive merchant identity from authenticated credentials, authorize POST access,
-and enforce resource ownership on every GET. This API is not production-grade multi-tenant
-security.
+Run these commands in the same Bash or Zsh terminal. The expiry year is generated in UTC so the example stays valid.
 
 ```bash
-expiry_year="$(python3 -c 'from datetime import datetime,timezone; print(datetime.now(timezone.utc).year + 2)')"
-curl --fail-with-body -i http://localhost:8090/payments \
-  -H 'Content-Type: application/json' \
-  -H 'Idempotency-Key: checkout-42' \
-  -H 'X-Merchant-ID: demo-merchant' \
-  -d "{\"card_number\":\"2222405343240001\",\"expiry_month\":12,\"expiry_year\":$expiry_year,\"currency\":\"GBP\",\"amount\":1050,\"cvv\":\"007\"}"
+expiry_year=$(python3 -c 'from datetime import datetime, timezone; print(datetime.now(timezone.utc).year + 2)')
+payment_request="{\"card_number\":\"2222405343240001\",\"expiry_month\":12,\"expiry_year\":${expiry_year},\"currency\":\"GBP\",\"amount\":1050,\"cvv\":\"007\"}"
+payment_response=$(curl --fail --silent --show-error \
+  -H 'Content-Type: application/json' -d "$payment_request" \
+  http://localhost:8090/payments)
+printf '%s\n' "$payment_response"
+payment_id=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<< "$payment_response")
+curl --fail --silent --show-error "http://localhost:8090/payments/$payment_id"
 ```
 
-A definitive result returns `201 Created` and a retrievable representation:
+The POST returns HTTP 201, `Location: /payments/{id}`, `X-Request-ID`, and a body such as:
 
 ```json
 {
-  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "id": "e28c59e0-f9ea-4608-aad7-9651ad261ca5",
   "status": "Authorized",
   "card_number_last_four": "0001",
   "expiry_month": 12,
-  "expiry_year": 2028,
+  "expiry_year": 2030,
   "currency": "GBP",
   "amount": 1050
 }
 ```
 
-Replay the same merchant, key, and payment semantics to receive the existing state without
-another bank request. Reuse the key with a different amount, currency, expiry, or card and
-the gateway returns `409 IDEMPOTENCY_CONFLICT`. Different merchants may reuse the same key.
-CVV is deliberately excluded from the fingerprint and therefore cannot be used to detect a
-CVV-only change; storing even a derived CVV value would be inappropriate.
+GET returns HTTP 200 with the stored payment representation. Authorization is not capture or settlement. The original bank simulator authorizes odd final card digits, declines nonzero even digits, and returns HTTP 503 for a final digit of zero.
 
-POST response status is intentional and covered by tests:
+## Validation assumptions
 
-| Situation | HTTP status |
-|---|---:|
-| Newly admitted request with a returned result | `201 Created` |
-| Replay of IN_FLIGHT work | `202 Accepted` |
-| Replay of AUTHORIZED, DECLINED, or UNKNOWN | `200 OK` |
-| Same key with different semantics | `409 Conflict` |
+All six request fields are required. JSON scalar coercion is disabled: numeric fields must be JSON integers and card number/CVV must be strings.
 
-`202` does not promise background retry or eventual resolution; it only reports that the one
-claimed invocation is still in progress. `UNKNOWN` is returned as `200` on replay because no
-automatic work remains and the current uncertain state is the retrievable result. Initial mapped
-bank failures retain their existing 502/503/504 error codes for compatibility.
+| Field | Accepted values |
+| --- | --- |
+| `card_number` | 14–19 ASCII digits |
+| `expiry_month` | Integer 1–12 |
+| `expiry_year` | Integer 1000–9999; combined year/month must be strictly after the current UTC month |
+| `currency` | `USD`, `GBP` or `EUR` |
+| `amount` | Signed 32-bit integer in minor currency units |
+| `cvv` | 3–4 ASCII digits; leading zeros are preserved |
 
-```bash
-curl http://localhost:8090/payments/550e8400-e29b-41d4-a716-446655440000
-```
+The current UTC month is rejected. Zero and negative amounts are accepted because the challenge requires an integer but does not specify positivity. Fractional/exponent-form numbers, integer overflow, missing/null fields and incorrect JSON types are rejected. Invalid payments produce HTTP 400 with `Rejected`, without admission or bank I/O.
 
-Every response has a server-generated `X-Request-ID`. The payment ID is a separate stable
-business identity. A mapped bank failure returns its existing `502`/`503`/`504` classification
-with `payment_id` and `status: Unknown`; GET exposes that in-memory state without retrying.
-HTTP 503, connection failure, timeout, and invalid/malformed success responses are all treated
-as ambiguous after dispatch and become `Unknown`; the simulator cannot prove no side effect.
+## Optional idempotency
 
-`Idempotency-Key` remains optional. Every valid request is admitted as `IN_FLIGHT` before bank
-I/O. Without a key, every POST creates an independent payment and is authorized independently;
-even identical payloads are not deduplicated. An unkeyed bank failure therefore leaves a
-queryable `Unknown` payment, but a later unkeyed POST is a new payment and calls the bank again.
-
-## States
-
-```text
-IN_FLIGHT ──> AUTHORIZED
-      ├─────> DECLINED
-      └─────> UNKNOWN (no automatic outgoing transition)
-```
-
-`AUTHORIZED` means authorization only; capture, settlement, refund, and webhooks are outside
-scope. Validation rejection is an API result (`Rejected`), not a bank decline.
-
-## Tests
+For a payment the client may retry, supply a nonblank `Idempotency-Key` of at most 255 characters. Keys are scoped by `X-Merchant-ID`, which defaults to `test-merchant` and is only a mock scope, not authentication.
 
 ```bash
-./gradlew test
+curl -i -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: example-order-1' \
+  -H 'X-Merchant-ID: demo-merchant' \
+  -d "$payment_request" http://localhost:8090/payments
 ```
 
-The suite covers normal V1-compatible responses, merchant-scoped conflicts, deterministic
-concurrency, unified execution ownership, timeout/invalid/503 handling, UNKNOWN replay,
-terminal-state protection, and PAN/CVV exclusion from stored snapshots, API output, error output,
-and normal logs.
+Repeating this command returns the same payment without another bank call. Changing payment semantics under the same merchant/key returns HTTP 409. The HMAC-SHA-256 fingerprint covers the operation, full PAN, expiry, currency and amount; **CVV is deliberately excluded**. A matching historical replay is allowed after the card expires, but must still pass structural validation.
 
-For a manual simulator check:
+Every request without a key creates an independent payment, including repeats after an uncertain outcome. Both keyed and unkeyed requests are admitted before calling the bank. Only the caller receiving `CREATED` from atomic admission may execute the authorization. Keys have no eviction policy and remain retained until process restart.
+
+## Responses and uncertain outcomes
+
+`Unknown` is an additional safety semantic, not a bank decline. A timeout, unavailable bank or invalid bank response leaves an admitted payment with an uncertain outcome. Mapped bank failures return `payment_id` and `Unknown` for both keyed and unkeyed requests, so the result can be queried. There is no automatic retry or recovery.
+
+| Request / result | HTTP | Meaning |
+| --- | --- | --- |
+| New payment with a valid bank decision | 201 | `Authorized` or `Declined`; includes `Location` |
+| Matching keyed replay with `InFlight` | 202 | Admission exists without a recorded outcome; includes `Location` |
+| Matching keyed replay with a recorded outcome | 200 | Existing `Authorized`, `Declined` or `Unknown`; includes `Location` |
+| GET existing payment | 200 | Stored state, including `InFlight` or `Unknown` |
+| Invalid payment | 400 | `Rejected`; no bank call |
+| Invalid idempotency key or malformed payment UUID | 400 | Input error |
+| Same merchant/key with different payment semantics | 409 | Existing payment is unchanged |
+| GET missing payment | 404 | Payment not found |
+| Unsupported method / content type | 405 / 415 | Request cannot be handled; 405 includes `Allow` |
+| Invalid/unexpected bank response | 502 | `Unknown` with `payment_id` |
+| Bank unavailable or connection failure | 503 | `Unknown` with `payment_id` |
+| Bank timeout | 504 | `Unknown` with `payment_id` |
+| Unexpected internal failure | 500 | Sanitized error; no payment ID in the generic error body |
+
+Application API responses include `X-Request-ID`; error bodies include the matching `request_id`. HTTP 200 for an `Unknown` replay means successful retrieval, not successful authorization. HTTP 202 does not guarantee that an execution worker is still running: local state-write failure can leave `InFlight` indefinitely. After a generic 500, a keyed client can replay to inspect retained state; an unkeyed client may have no payment ID to query. See the [failure boundaries and design decisions](docs/DESIGN_DECISIONS.md).
+
+## Verification
 
 ```bash
-docker compose up -d
-./gradlew bootRun
-# in another terminal
+./gradlew clean build
+./gradlew test --rerun-tasks
+# With the gateway and simulator running:
 ./scripts/smoke-test.sh
 ```
 
-## Important limitations
+Tests cover strict validation, bank transport and timeout mapping, sanitized responses/logs, historical replay, controlled concurrent admission, independent merchants/keys, and local state-write failures. Integration tests use a local HTTP bank stub and require no external service.
 
-- State and idempotency records disappear on JVM restart.
-- Atomicity and execution claims apply to one JVM only; multiple gateway instances are unsafe.
-- The bank call and map update cannot be one atomic transaction.
-- The simulator has no downstream idempotency key or inquiry API. An `UNKNOWN` payment is
-  intentionally not retried and cannot be reconciled automatically.
-- Raw PAN and CVV necessarily exist transiently in request objects and the outbound bank call.
-  They are never stored in payment aggregates; this is not a PCI vault or certification claim.
-- A process-local HMAC identity is a privacy improvement over a plain PAN hash, not tokenization.
-- `X-Merchant-ID` is caller-controlled test input. There is no authentication or GET ownership
-  enforcement in this challenge implementation.
+The smoke script checks independent unkeyed requests, authorization/decline retrieval, queryable bank-503 uncertainty, keyed replay/conflict, keyed `Unknown` replay, invalid requests, response headers and sensitive-field exclusion. It uses unique keys and cleans up its temporary files. Set `GATEWAY_URL` to test another gateway URL.
 
-See [docs/V2_LITE_CONTRACT.md](docs/V2_LITE_CONTRACT.md) for the exact behavior and safety
-contract.
+## Deliberate limits
+
+- Payment state and idempotency exist only within one JVM lifetime. There is no persistence, shared store, eviction or crash recovery.
+- Bank authorization and local state updates are not one transaction. A bank side effect can occur before a local failure; `InFlight` or `Unknown` may remain indefinitely. No retry, reconciliation or exactly-once guarantee is claimed.
+- `X-Merchant-ID` is client-controlled. GET does not enforce ownership. Authentication and authorization are outside this challenge.
+- PAN/CVV are transient inputs to the bank request. The repository stores last four digits and an HMAC fingerprint; application logs exclude raw payloads and arbitrary request paths. This is not a claim of PCI compliance or a production vault.
+
+[Design decisions](docs/DESIGN_DECISIONS.md) explain why these boundaries were chosen.

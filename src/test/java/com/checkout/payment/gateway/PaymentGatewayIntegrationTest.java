@@ -1,6 +1,7 @@
 package com.checkout.payment.gateway;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -8,17 +9,25 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.checkout.payment.gateway.repository.InMemoryPaymentRepository;
+import com.checkout.payment.gateway.enums.PaymentStatus;
+import com.checkout.payment.gateway.model.PaymentResponse;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.YearMonth;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -40,6 +49,7 @@ class PaymentGatewayIntegrationTest {
 
   @Autowired MockMvc mvc;
   @Autowired InMemoryPaymentRepository repository;
+  @Autowired ObjectMapper objectMapper;
 
   @DynamicPropertySource
   static void properties(DynamicPropertyRegistry registry) {
@@ -77,9 +87,39 @@ class PaymentGatewayIntegrationTest {
         .andExpect(jsonPath("$.status").value("Authorized"));
 
     assertEqualsOneBankCall();
-    assertFalse(body.contains("2222405343240001"));
-    assertFalse(body.contains("007"));
+    assertSanitizedPaymentResponse(body);
     assertSensitiveDataAbsent(output.getOut(), "2222405343240001", "007");
+  }
+
+  @Test
+  void safePaymentIdMayContainTheSameDigitsAsCvv() throws Exception {
+    PaymentResponse response = new PaymentResponse(
+        UUID.fromString("00700000-0000-4000-8000-000000000000"), PaymentStatus.AUTHORIZED,
+        "0001", 12, 2099, "GBP", 1050);
+
+    assertSanitizedPaymentResponse(objectMapper.writeValueAsString(response));
+  }
+
+  @ParameterizedTest
+  @CsvSource({"0001,201,Authorized", "0000,503,Unknown"})
+  void realKeyedReplayDoesNotCrossBankTransportAgain(
+      String suffix, int initialStatus, String paymentStatus) throws Exception {
+    String request = validJson("222240534324" + suffix);
+    MvcResult initial = mvc.perform(post("/payments").header("Idempotency-Key", "http-replay")
+            .contentType(MediaType.APPLICATION_JSON).content(request))
+        .andExpect(status().is(initialStatus))
+        .andExpect(jsonPath("$.status").value(paymentStatus))
+        .andReturn();
+    String id = com.jayway.jsonpath.JsonPath.read(initial.getResponse().getContentAsString(),
+        initialStatus == 201 ? "$.id" : "$.payment_id");
+
+    mvc.perform(post("/payments").header("Idempotency-Key", "http-replay")
+            .contentType(MediaType.APPLICATION_JSON).content(request))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.id").value(id))
+        .andExpect(jsonPath("$.status").value(paymentStatus));
+    assertEqualsOneBankCall();
+    assertEquals(1, repository.size());
   }
 
   @Test
@@ -152,7 +192,7 @@ class PaymentGatewayIntegrationTest {
   }
 
   private String validJson(String card) {
-    YearMonth expiry = YearMonth.now().plusYears(1);
+    YearMonth expiry = YearMonth.now(java.time.ZoneOffset.UTC).plusYears(1);
     return """
         {"card_number":"%s","expiry_month":%d,"expiry_year":%d,"currency":"GBP","amount":1050,"cvv":"007"}
         """.formatted(card, expiry.getMonthValue(), expiry.getYear());
@@ -160,6 +200,15 @@ class PaymentGatewayIntegrationTest {
 
   private void assertEqualsOneBankCall() {
     org.junit.jupiter.api.Assertions.assertEquals(1, BANK_CALLS.get());
+  }
+
+  private static void assertSanitizedPaymentResponse(String body) {
+    Map<String, Object> fields = com.jayway.jsonpath.JsonPath.read(body, "$");
+    assertEquals(Set.of("id", "status", "card_number_last_four", "expiry_month",
+        "expiry_year", "currency", "amount"), fields.keySet());
+    assertFalse(body.contains("2222405343240001"));
+    // Check values and the response schema, not digit substrings inside a random UUID.
+    assertFalse(fields.containsValue("007"));
   }
 
   private void assertSensitiveDataAbsent(String logs, String pan, String cvv) {
