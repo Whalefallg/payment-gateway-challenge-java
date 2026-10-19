@@ -2,19 +2,19 @@ package com.checkout.payment.gateway.domain;
 
 import com.checkout.payment.gateway.enums.PaymentStatus;
 
+/** Type-safe input for the only two definitive authorization outcomes. */
 public enum DefinitiveOutcome {
-  AUTHORIZED(PaymentStatus.AUTHORIZED, AttemptStatus.AUTHORIZED),
-  DECLINED(PaymentStatus.DECLINED, AttemptStatus.DECLINED),
-  FAILED_NO_EFFECT(PaymentStatus.FAILED_NO_EFFECT, AttemptStatus.FAILED_NO_EFFECT);
+  AUTHORIZED(PaymentStatus.AUTHORIZED),
+  DECLINED(PaymentStatus.DECLINED);
 
   private final PaymentStatus paymentStatus;
-  private final AttemptStatus attemptStatus;
 
-  DefinitiveOutcome(PaymentStatus paymentStatus, AttemptStatus attemptStatus) {
+  DefinitiveOutcome(PaymentStatus paymentStatus) {
     this.paymentStatus = paymentStatus;
-    this.attemptStatus = attemptStatus;
   }
 
-  public PaymentStatus paymentStatus() { return paymentStatus; }
-  public AttemptStatus attemptStatus() { return attemptStatus; }
+  public PaymentStatus paymentStatus() {
+    return paymentStatus;
+  }
 }
+

@@ -3,28 +3,27 @@ package com.checkout.payment.gateway.service;
 import com.checkout.payment.gateway.client.BankClient;
 import com.checkout.payment.gateway.client.BankOutcome;
 import com.checkout.payment.gateway.domain.DefinitiveOutcome;
-import com.checkout.payment.gateway.domain.PaymentIntent;
 import com.checkout.payment.gateway.enums.PaymentStatus;
 import com.checkout.payment.gateway.exception.GatewayException;
 import com.checkout.payment.gateway.exception.PaymentValidationException;
 import com.checkout.payment.gateway.idempotency.RequestFingerprint;
 import com.checkout.payment.gateway.model.ErrorResponse.ErrorDetail;
+import com.checkout.payment.gateway.model.PaymentRecord;
 import com.checkout.payment.gateway.model.PaymentResponse;
 import com.checkout.payment.gateway.model.PostPaymentRequest;
 import com.checkout.payment.gateway.repository.AdmissionResult;
 import com.checkout.payment.gateway.repository.PaymentCommand;
 import com.checkout.payment.gateway.repository.PaymentRepository;
-import com.checkout.payment.gateway.repository.PaymentsRepository;
-import java.util.UUID;
-import java.util.Comparator;
-import java.util.Set;
+import com.checkout.payment.gateway.repository.TransitionResult;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validator;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.HttpStatus;
-import org.springframework.stereotype.Service;
+import java.util.Comparator;
+import java.util.Set;
+import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Service;
 
 @Service
 public class PaymentGatewayService {
@@ -33,37 +32,21 @@ public class PaymentGatewayService {
 
   public static final String DEFAULT_MERCHANT = "test-merchant";
 
-  private final PaymentRepository paymentsRepository;
+  private final PaymentRepository repository;
   private final BankClient bankClient;
-  private final PaymentExecutionService executionService;
   private final RequestFingerprint fingerprint;
   private final Validator validator;
-  private final DefinitiveEvidenceService evidenceService;
 
-  @Autowired
-  public PaymentGatewayService(PaymentRepository paymentsRepository, BankClient bankClient,
-      PaymentExecutionService executionService, RequestFingerprint fingerprint,
-      Validator validator, DefinitiveEvidenceService evidenceService) {
-    this.paymentsRepository = paymentsRepository;
+  public PaymentGatewayService(PaymentRepository repository, BankClient bankClient,
+      RequestFingerprint fingerprint, Validator validator) {
+    this.repository = repository;
     this.bankClient = bankClient;
-    this.executionService = executionService;
     this.fingerprint = fingerprint;
     this.validator = validator;
-    this.evidenceService = evidenceService;
-  }
-
-  /** Kept for the V1 unit-level API; production wiring uses the injected constructor. */
-  public PaymentGatewayService(PaymentsRepository paymentsRepository, BankClient bankClient) {
-    this.paymentsRepository = paymentsRepository;
-    this.bankClient = bankClient;
-    this.executionService = new PaymentExecutionService(paymentsRepository, bankClient);
-    this.fingerprint = new RequestFingerprint("unit-test-fingerprint-secret-32-bytes");
-    this.validator = null;
-    this.evidenceService = new DefinitiveEvidenceService(paymentsRepository);
   }
 
   public PaymentResponse getPaymentById(UUID id) {
-    return paymentsRepository.findById(id)
+    return repository.findById(id)
         .map(PaymentGatewayService::toResponse)
         .orElseThrow(() -> new GatewayException(
             HttpStatus.NOT_FOUND, "PAYMENT_NOT_FOUND", "Payment was not found"));
@@ -80,60 +63,103 @@ public class PaymentGatewayService {
 
   public PaymentSubmission submitPayment(PostPaymentRequest request, String idempotencyKey,
       String merchantId) {
-    if (idempotencyKey != null && (idempotencyKey.isBlank() || idempotencyKey.length() > 255)) {
-      throw new GatewayException(HttpStatus.BAD_REQUEST, "INVALID_IDEMPOTENCY_KEY",
-          "Idempotency-Key must contain between 1 and 255 characters");
-    }
-    Set<ConstraintViolation<PostPaymentRequest>> violations = validator == null
-        ? Set.of() : validator.validate(request);
-    PaymentIntent replay = idempotencyKey == null ? null
-        : paymentsRepository.findByIdempotencyKey(merchantId, idempotencyKey).orElse(null);
+    validateKey(idempotencyKey);
+    Set<ConstraintViolation<PostPaymentRequest>> violations = validator.validate(request);
+    PaymentRecord replay = idempotencyKey == null ? null
+        : repository.findByIdempotencyKey(merchantId, idempotencyKey).orElse(null);
     if (replay != null) {
-      // A historical replay may use a card that has since expired. All structural constraints
-      // still apply, and the fingerprint must still match the admitted payment.
-      Set<ConstraintViolation<PostPaymentRequest>> structural = violations.stream()
-          .filter(violation -> !violation.getConstraintDescriptor().getAnnotation()
-              .annotationType().getSimpleName().equals("ValidExpiry"))
-          .collect(java.util.stream.Collectors.toSet());
-      rejectIfInvalid(structural);
+      rejectIfInvalid(structuralViolations(violations));
       if (!replay.requestFingerprint().equals(fingerprint.create(request))) {
-        LOG.warn("Idempotency conflict payment_id={}", replay.paymentId());
-        throw new GatewayException(HttpStatus.CONFLICT, "IDEMPOTENCY_CONFLICT",
-            "Idempotency-Key was already used for a different payment");
+        throw conflict(replay);
       }
       LOG.info("Idempotent replay payment_id={} status={}", replay.paymentId(), replay.status());
       return PaymentSubmission.replayed(toResponse(replay));
     }
     rejectIfInvalid(violations);
-    PaymentCommand command = command(request);
 
-    // Without a key, retain the V1 failure contract: call the bank first and only store a
-    // definitive result. Keyed requests use the full admitted lifecycle and UNKNOWN state.
+    PaymentCommand command = command(request);
     if (idempotencyKey == null) {
-      BankOutcome outcome = bankClient.process(request);
-      AdmissionResult admitted = paymentsRepository.accept(merchantId, null, command);
-      paymentsRepository.claimExecution(admitted.payment().paymentId());
-      DefinitiveOutcome definitive = outcome == BankOutcome.AUTHORIZED
-          ? DefinitiveOutcome.AUTHORIZED : DefinitiveOutcome.DECLINED;
-      return PaymentSubmission.created(toResponse(evidenceService.apply(
-          admitted.payment().paymentId(), definitive, null)));
+      // V1 compatibility: bank first, and persist only an explicit definitive outcome.
+      DefinitiveOutcome outcome = toDefinitive(bankClient.process(request));
+      return PaymentSubmission.created(
+          toResponse(repository.saveDefinitive(merchantId, command, outcome)));
     }
 
-    AdmissionResult admission = paymentsRepository.accept(merchantId, idempotencyKey, command);
+    AdmissionResult admission = repository.accept(merchantId, idempotencyKey, command);
     if (admission.kind() == AdmissionResult.Kind.CONFLICT) {
-      LOG.warn("Idempotency conflict payment_id={}", admission.payment().paymentId());
-      throw new GatewayException(HttpStatus.CONFLICT, "IDEMPOTENCY_CONFLICT",
-          "Idempotency-Key was already used for a different payment");
+      throw conflict(admission.payment());
     }
     if (admission.kind() == AdmissionResult.Kind.EXISTING) {
-      LOG.info("Concurrent idempotent replay payment_id={} status={}",
-          admission.payment().paymentId(), admission.payment().status());
       return PaymentSubmission.replayed(toResponse(admission.payment()));
     }
-    LOG.info("Payment admitted payment_id={} attempt_id={}", admission.payment().paymentId(),
-        admission.payment().attempts().get(0).attemptId());
-    return PaymentSubmission.created(
-        toResponse(executionService.execute(admission.payment().paymentId(), request)));
+
+    TransitionResult claim = repository.claimExecution(admission.payment().paymentId());
+    if (!claim.applied()) {
+      return PaymentSubmission.replayed(toResponse(claim.payment()));
+    }
+    LOG.info("Payment execution claimed payment_id={}", claim.payment().paymentId());
+    return PaymentSubmission.created(toResponse(executeClaimed(claim.payment().paymentId(), request)));
+  }
+
+  private PaymentRecord executeClaimed(UUID paymentId, PostPaymentRequest request) {
+    BankOutcome bankOutcome;
+    try {
+      bankOutcome = bankClient.process(request);
+    } catch (GatewayException bankFailure) {
+      PaymentRecord current = recordUnknown(paymentId, bankFailure);
+      if (isDefinitive(current.status())) return current;
+      throw bankFailure.withPayment(paymentId, current.status());
+    } catch (RuntimeException unexpectedBankFailure) {
+      recordUnknown(paymentId, unexpectedBankFailure);
+      throw unexpectedBankFailure;
+    }
+    PaymentRecord completed = repository.complete(paymentId, toDefinitive(bankOutcome));
+    LOG.info("Definitive bank outcome applied payment_id={} status={}",
+        paymentId, completed.status());
+    return completed;
+  }
+
+  private PaymentRecord recordUnknown(UUID paymentId, RuntimeException bankFailure) {
+    try {
+      TransitionResult result = repository.markUnknown(paymentId);
+      if (result.applied()) {
+        LOG.warn("Payment outcome uncertain payment_id={}", paymentId);
+      }
+      return result.payment();
+    } catch (RuntimeException localFailure) {
+      if (localFailure != bankFailure) localFailure.addSuppressed(bankFailure);
+      throw localFailure;
+    }
+  }
+
+  private static DefinitiveOutcome toDefinitive(BankOutcome outcome) {
+    return outcome == BankOutcome.AUTHORIZED
+        ? DefinitiveOutcome.AUTHORIZED : DefinitiveOutcome.DECLINED;
+  }
+
+  private static boolean isDefinitive(PaymentStatus status) {
+    return status == PaymentStatus.AUTHORIZED || status == PaymentStatus.DECLINED;
+  }
+
+  private static Set<ConstraintViolation<PostPaymentRequest>> structuralViolations(
+      Set<ConstraintViolation<PostPaymentRequest>> violations) {
+    return violations.stream()
+        .filter(violation -> !violation.getConstraintDescriptor().getAnnotation()
+            .annotationType().getSimpleName().equals("ValidExpiry"))
+        .collect(java.util.stream.Collectors.toSet());
+  }
+
+  private static void validateKey(String idempotencyKey) {
+    if (idempotencyKey != null && (idempotencyKey.isBlank() || idempotencyKey.length() > 255)) {
+      throw new GatewayException(HttpStatus.BAD_REQUEST, "INVALID_IDEMPOTENCY_KEY",
+          "Idempotency-Key must contain between 1 and 255 characters");
+    }
+  }
+
+  private static GatewayException conflict(PaymentRecord payment) {
+    LOG.warn("Idempotency conflict payment_id={}", payment.paymentId());
+    return new GatewayException(HttpStatus.CONFLICT, "IDEMPOTENCY_CONFLICT",
+        "Idempotency-Key was already used for a different payment");
   }
 
   private static void rejectIfInvalid(Set<ConstraintViolation<PostPaymentRequest>> violations) {
@@ -156,8 +182,9 @@ public class PaymentGatewayService {
         pan.substring(pan.length() - 4), request.getExpiryMonth(), request.getExpiryYear());
   }
 
-  private static PaymentResponse toResponse(PaymentIntent payment) {
+  private static PaymentResponse toResponse(PaymentRecord payment) {
     return new PaymentResponse(payment.paymentId(), payment.status(), payment.cardNumberLastFour(),
         payment.expiryMonth(), payment.expiryYear(), payment.currency(), payment.amount());
   }
 }
+

@@ -8,7 +8,6 @@ public enum PaymentStatus {
   UNKNOWN("Unknown"),
   AUTHORIZED("Authorized"),
   DECLINED("Declined"),
-  FAILED_NO_EFFECT("FailedNoEffect"),
   REJECTED("Rejected");
 
   private final String name;

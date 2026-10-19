@@ -28,10 +28,17 @@ public class RequestCorrelationFilter extends OncePerRequestFilter {
     try {
       filterChain.doFilter(request, response);
     } finally {
-      LOG.info("Request completed method={} path={} status={} duration_ms={}",
-          request.getMethod(), request.getRequestURI(), response.getStatus(),
+      LOG.info("Request completed method={} route={} status={} duration_ms={}",
+          request.getMethod(), routeCategory(request), response.getStatus(),
           (System.nanoTime() - startNanos) / 1_000_000);
       MDC.remove("request_id");
     }
+  }
+
+  private static String routeCategory(HttpServletRequest request) {
+    String path = request.getRequestURI();
+    if ("/payments".equals(path)) return "/payments";
+    if (path.startsWith("/payments/")) return "/payments/{id}";
+    return "other";
   }
 }

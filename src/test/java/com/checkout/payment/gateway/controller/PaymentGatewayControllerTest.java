@@ -18,7 +18,7 @@ import com.checkout.payment.gateway.client.BankClient;
 import com.checkout.payment.gateway.client.BankOutcome;
 import com.checkout.payment.gateway.exception.GatewayException;
 import com.checkout.payment.gateway.model.PostPaymentRequest;
-import com.checkout.payment.gateway.repository.PaymentsRepository;
+import com.checkout.payment.gateway.repository.InMemoryPaymentRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.time.Clock;
@@ -49,7 +49,7 @@ import org.springframework.test.web.servlet.MvcResult;
 class PaymentGatewayControllerTest {
 
   @Autowired MockMvc mvc;
-  @Autowired PaymentsRepository repository;
+  @Autowired InMemoryPaymentRepository repository;
   @Autowired Clock clock;
   @Autowired ObjectMapper objectMapper;
   @MockBean BankClient bankClient;

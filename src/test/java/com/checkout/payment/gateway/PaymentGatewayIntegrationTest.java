@@ -7,7 +7,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-import com.checkout.payment.gateway.repository.PaymentsRepository;
+import com.checkout.payment.gateway.repository.InMemoryPaymentRepository;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -39,7 +39,7 @@ class PaymentGatewayIntegrationTest {
   private static final HttpServer BANK = startBank();
 
   @Autowired MockMvc mvc;
-  @Autowired PaymentsRepository repository;
+  @Autowired InMemoryPaymentRepository repository;
 
   @DynamicPropertySource
   static void properties(DynamicPropertyRegistry registry) {
@@ -90,6 +90,18 @@ class PaymentGatewayIntegrationTest {
         .andExpect(jsonPath("$.status").value("Rejected"));
     assertTrue(BANK_CALLS.get() == 0);
     assertTrue(repository.size() == 0);
+  }
+
+  @Test
+  void malformedPaymentPathDoesNotWriteRawSensitiveValueToLogs(CapturedOutput output)
+      throws Exception {
+    String sensitivePathValue = "4111111111111111-cvv-987";
+
+    mvc.perform(get("/payments/{id}", sensitivePathValue))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("INVALID_PAYMENT_ID"));
+
+    assertFalse(output.getOut().contains(sensitivePathValue));
   }
 
   private static HttpServer startBank() {

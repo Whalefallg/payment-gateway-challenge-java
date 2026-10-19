@@ -3,66 +3,122 @@ package com.checkout.payment.gateway.service;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.checkout.payment.gateway.client.BankClient;
 import com.checkout.payment.gateway.client.BankOutcome;
+import com.checkout.payment.gateway.enums.PaymentStatus;
 import com.checkout.payment.gateway.exception.GatewayException;
-import com.checkout.payment.gateway.model.PaymentRecord;
-import com.checkout.payment.gateway.model.PaymentResponse;
+import com.checkout.payment.gateway.idempotency.RequestFingerprint;
 import com.checkout.payment.gateway.model.PostPaymentRequest;
-import com.checkout.payment.gateway.repository.PaymentsRepository;
+import com.checkout.payment.gateway.repository.InMemoryPaymentRepository;
+import jakarta.validation.Validator;
+import java.time.Clock;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 
 class PaymentGatewayServiceTest {
 
   @Test
-  void independentAuthorizedAndDeclinedPaymentsAreSanitizedAndStored() {
+  void unkeyedRequestsAreBankFirstIndependentAndPersistOnlyDefinitiveResults() {
     BankClient bank = mock(BankClient.class);
-    PaymentsRepository repository = new PaymentsRepository();
-    PaymentGatewayService service = new PaymentGatewayService(repository, bank);
-    PostPaymentRequest request = request();
-    when(bank.process(request)).thenReturn(BankOutcome.AUTHORIZED, BankOutcome.DECLINED);
+    InMemoryPaymentRepository repository = new InMemoryPaymentRepository(Clock.systemUTC());
+    PaymentGatewayService service = service(repository, bank);
+    when(bank.process(any())).thenReturn(BankOutcome.AUTHORIZED, BankOutcome.DECLINED);
 
-    PaymentResponse first = service.processPayment(request);
-    PaymentResponse second = service.processPayment(request);
+    var first = service.processPayment(request(1050, "GBP", "0001"));
+    var second = service.processPayment(request(1050, "GBP", "0001"));
 
     assertNotEquals(first.id(), second.id());
-    assertEquals("Authorized", first.status().getName());
-    assertEquals("Declined", second.status().getName());
+    assertEquals(PaymentStatus.AUTHORIZED, first.status());
+    assertEquals(PaymentStatus.DECLINED, second.status());
     assertEquals(2, repository.size());
-    PaymentRecord stored = repository.get(first.id()).orElseThrow();
-    assertEquals("0001", stored.cardNumberLastFour());
-    assertEquals(first, service.getPaymentById(first.id()));
-    org.junit.jupiter.api.Assertions.assertFalse(
-        java.util.Arrays.stream(PaymentRecord.class.getRecordComponents())
-            .map(component -> component.getName().toLowerCase())
-            .anyMatch(name -> name.equals("cardnumber") || name.equals("cvv")));
+    assertEquals("0001", repository.findById(first.id()).orElseThrow().cardNumberLastFour());
   }
 
   @Test
-  void bankFailureDoesNotCreateRecord() {
+  void unkeyedBankFailureCreatesNoRecordAndHasNoPaymentIdentity() {
     BankClient bank = mock(BankClient.class);
-    PaymentsRepository repository = new PaymentsRepository();
-    PaymentGatewayService service = new PaymentGatewayService(repository, bank);
-    PostPaymentRequest request = request();
-    when(bank.process(request)).thenThrow(new GatewayException(
+    InMemoryPaymentRepository repository = new InMemoryPaymentRepository(Clock.systemUTC());
+    PaymentGatewayService service = service(repository, bank);
+    when(bank.process(any())).thenThrow(new GatewayException(
         HttpStatus.SERVICE_UNAVAILABLE, "BANK_UNAVAILABLE", "Bank is unavailable"));
 
-    assertThrows(GatewayException.class, () -> service.processPayment(request));
+    GatewayException failure = assertThrows(
+        GatewayException.class, () -> service.processPayment(request(1, "GBP", "0001")));
+
     assertEquals(0, repository.size());
+    assertEquals(null, failure.getPaymentId());
+    assertEquals(null, failure.getPaymentStatus());
   }
 
-  private PostPaymentRequest request() {
+  @Test
+  void keyedUnknownNeverReauthorizesAndCvvOnlyChangeReplays() {
+    BankClient bank = mock(BankClient.class);
+    InMemoryPaymentRepository repository = new InMemoryPaymentRepository(Clock.systemUTC());
+    PaymentGatewayService service = service(repository, bank);
+    when(bank.process(any())).thenThrow(new GatewayException(
+        HttpStatus.GATEWAY_TIMEOUT, "BANK_TIMEOUT", "Bank request timed out"));
+    PostPaymentRequest first = request(1, "GBP", "0001");
+
+    GatewayException timeout = assertThrows(GatewayException.class,
+        () -> service.processPayment(first, "key", "merchant"));
+    PostPaymentRequest changedCvv = request(1, "GBP", "0001");
+    changedCvv.setCvv("999");
+
+    assertEquals(PaymentStatus.UNKNOWN,
+        service.processPayment(changedCvv, "key", "merchant").status());
+    assertEquals(PaymentStatus.UNKNOWN,
+        repository.findById(timeout.getPaymentId()).orElseThrow().status());
+    verify(bank, times(1)).process(any());
+  }
+
+  @Test
+  void sameKeyDifferentPanWithSameLastFourConflictsBeforeBank() {
+    BankClient bank = mock(BankClient.class);
+    when(bank.process(any())).thenReturn(BankOutcome.AUTHORIZED);
+    InMemoryPaymentRepository repository = new InMemoryPaymentRepository(Clock.systemUTC());
+    PaymentGatewayService service = service(repository, bank);
+    service.processPayment(requestWithPan("2222405343240001"), "key", "merchant");
+
+    GatewayException conflict = assertThrows(GatewayException.class,
+        () -> service.processPayment(
+            requestWithPan("1111111111110001"), "key", "merchant"));
+
+    assertEquals("IDEMPOTENCY_CONFLICT", conflict.getErrorCode());
+    verify(bank, times(1)).process(any());
+  }
+
+  private static PaymentGatewayService service(
+      InMemoryPaymentRepository repository, BankClient bank) {
+    Validator validator = mock(Validator.class);
+    when(validator.validate(any(PostPaymentRequest.class))).thenReturn(java.util.Set.of());
+    return new PaymentGatewayService(repository, bank,
+        new RequestFingerprint("unit-test-fingerprint-secret-32-bytes"),
+        validator);
+  }
+
+  static PostPaymentRequest request(int amount, String currency, String suffix) {
+    return requestWithPan("222240534324" + suffix, amount, currency);
+  }
+
+  static PostPaymentRequest requestWithPan(String pan) {
+    return requestWithPan(pan, 10, "GBP");
+  }
+
+  static PostPaymentRequest requestWithPan(String pan, int amount, String currency) {
     PostPaymentRequest request = new PostPaymentRequest();
-    request.setCardNumber("2222405343240001");
+    request.setCardNumber(pan);
     request.setExpiryMonth(12);
     request.setExpiryYear(2099);
-    request.setCurrency("GBP");
-    request.setAmount(1050);
+    request.setCurrency(currency);
+    request.setAmount(amount);
     request.setCvv("007");
     return request;
   }
 }
+

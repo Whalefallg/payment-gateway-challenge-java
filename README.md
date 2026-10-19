@@ -1,9 +1,8 @@
-# Payment Gateway V2-Core
+# Payment Gateway V2-Lite
 
-A Java 17 / Spring Boot authorization gateway that models a logical payment separately
-from its bank attempt. V2 adds merchant-scoped idempotency, atomic in-process execution
-claims, explicit payment states, and honest handling of uncertain bank outcomes while
-deliberately retaining `ConcurrentHashMap` storage.
+A Java 17 / Spring Boot authorization gateway with one immutable payment record,
+merchant-scoped idempotency, atomic in-process execution ownership, and honest handling of
+uncertain bank outcomes. It deliberately retains `ConcurrentHashMap` storage.
 
 This is a modular-monolith exercise. It is not a durable or PCI-certified payment system.
 
@@ -27,7 +26,6 @@ The gateway listens on `http://localhost:8090`, the supplied simulator on
 | `BANK_CONNECT_TIMEOUT` | `2s` | Bank connection timeout |
 | `BANK_READ_TIMEOUT` | `2s` | Bank response timeout |
 | `PAYMENT_FINGERPRINT_SECRET` | random per process | HMAC secret for instrument identity |
-| `PAYMENT_RECOVERY_STALE_AFTER` | `30s` | Age used by the in-memory stale decision service |
 
 For stable idempotency fingerprints throughout one deployment, configure a random
 `PAYMENT_FINGERPRINT_SECRET` containing at least 32 UTF-8 bytes. Short configured secrets fail
@@ -77,8 +75,8 @@ POST response status is intentional and covered by tests:
 | Situation | HTTP status |
 |---|---:|
 | Newly admitted request with a returned result | `201 Created` |
-| Replay of READY or IN_FLIGHT work | `202 Accepted` |
-| Replay of AUTHORIZED, DECLINED, UNKNOWN, or FAILED_NO_EFFECT | `200 OK` |
+| Replay of IN_FLIGHT work | `202 Accepted` |
+| Replay of AUTHORIZED, DECLINED, or UNKNOWN | `200 OK` |
 | Same key with different semantics | `409 Conflict` |
 
 `202` does not promise background retry or eventual resolution; it only reports that the one
@@ -104,10 +102,9 @@ always supply an idempotency key.
 ## States
 
 ```text
-READY ──> IN_FLIGHT ──> AUTHORIZED
-  │            ├──────> DECLINED
-  │            └──────> UNKNOWN ──> AUTHORIZED | DECLINED | FAILED_NO_EFFECT
-  └────> FAILED_NO_EFFECT
+IN_FLIGHT ──> AUTHORIZED
+      ├─────> DECLINED
+      └─────> UNKNOWN (no automatic outgoing transition)
 ```
 
 `AUTHORIZED` means authorization only; capture, settlement, refund, and webhooks are outside
@@ -119,9 +116,9 @@ scope. Validation rejection is an API result (`Rejected`), not a bank decline.
 ./gradlew test
 ```
 
-The suite covers the original V1 contract, state policy, merchant-scoped conflicts,
-100-request deterministic concurrency, one execution claim, timeout/invalid/503 handling,
-UNKNOWN replay, late evidence, terminal-state protection, and PAN/CVV exclusion from stored
+The suite covers the original V1 contract, merchant-scoped conflicts, deterministic concurrency,
+one execution owner, timeout/invalid/503 handling, UNKNOWN replay, terminal-state protection,
+and PAN/CVV exclusion from stored
 snapshots, API output, error output, and normal logs.
 
 For a manual simulator check:
@@ -146,5 +143,5 @@ docker compose up -d
 - `X-Merchant-ID` is caller-controlled test input. There is no authentication or GET ownership
   enforcement in this challenge implementation.
 
-See [docs/V2_CORE_ARCHITECTURE.md](docs/V2_CORE_ARCHITECTURE.md) for the design, failure
-matrix, concurrency reasoning, and PostgreSQL evolution path.
+See [docs/V2_LITE_CONTRACT.md](docs/V2_LITE_CONTRACT.md) for the exact behavior and safety
+contract.
