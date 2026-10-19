@@ -89,15 +89,15 @@ curl http://localhost:8090/payments/550e8400-e29b-41d4-a716-446655440000
 ```
 
 Every response has a server-generated `X-Request-ID`. The payment ID is a separate stable
-business identity. A keyed timeout returns a safe `504` error containing `payment_id` and
-`status: Unknown`; GET and replay continue to expose that in-memory state without retrying.
+business identity. A mapped bank failure returns its existing `502`/`503`/`504` classification
+with `payment_id` and `status: Unknown`; GET exposes that in-memory state without retrying.
 HTTP 503, connection failure, timeout, and invalid/malformed success responses are all treated
 as ambiguous after dispatch and become `Unknown`; the simulator cannot prove no side effect.
 
-For backward compatibility, a POST without `Idempotency-Key` retains V1 behavior: every
-call is independent, and upstream failures do not create a retrievable record. Such calls
-have no cross-request idempotency or UNKNOWN recovery guarantee. New integrations should
-always supply an idempotency key.
+`Idempotency-Key` remains optional. Every valid request is admitted as `IN_FLIGHT` before bank
+I/O. Without a key, every POST creates an independent payment and is authorized independently;
+even identical payloads are not deduplicated. An unkeyed bank failure therefore leaves a
+queryable `Unknown` payment, but a later unkeyed POST is a new payment and calls the bank again.
 
 ## States
 
@@ -116,10 +116,10 @@ scope. Validation rejection is an API result (`Rejected`), not a bank decline.
 ./gradlew test
 ```
 
-The suite covers the original V1 contract, merchant-scoped conflicts, deterministic concurrency,
-one execution owner, timeout/invalid/503 handling, UNKNOWN replay, terminal-state protection,
-and PAN/CVV exclusion from stored
-snapshots, API output, error output, and normal logs.
+The suite covers normal V1-compatible responses, merchant-scoped conflicts, deterministic
+concurrency, unified execution ownership, timeout/invalid/503 handling, UNKNOWN replay,
+terminal-state protection, and PAN/CVV exclusion from stored snapshots, API output, error output,
+and normal logs.
 
 For a manual simulator check:
 

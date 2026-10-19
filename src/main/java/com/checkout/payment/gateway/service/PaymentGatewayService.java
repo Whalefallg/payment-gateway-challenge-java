@@ -76,15 +76,8 @@ public class PaymentGatewayService {
     }
     rejectIfInvalid(violations);
 
-    PaymentCommand command = command(request);
-    if (idempotencyKey == null) {
-      // V1 compatibility: bank first, and persist only an explicit definitive outcome.
-      DefinitiveOutcome outcome = toDefinitive(bankClient.process(request));
-      return PaymentSubmission.created(
-          toResponse(repository.saveDefinitive(merchantId, command, outcome)));
-    }
-
-    AdmissionResult admission = repository.admitAndClaim(merchantId, idempotencyKey, command);
+    AdmissionResult admission = repository.admitAndClaim(
+        merchantId, idempotencyKey, command(request));
     if (admission.kind() == AdmissionResult.Kind.CONFLICT) {
       throw conflict(admission.payment());
     }

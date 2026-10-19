@@ -7,8 +7,6 @@ import java.util.UUID;
 
 public interface PaymentRepository {
   AdmissionResult admitAndClaim(String merchantId, String idempotencyKey, PaymentCommand command);
-  PaymentRecord saveDefinitive(
-      String merchantId, PaymentCommand command, DefinitiveOutcome outcome);
   Optional<PaymentRecord> findById(UUID paymentId);
   Optional<PaymentRecord> findByIdempotencyKey(String merchantId, String idempotencyKey);
   PaymentRecord markUnknown(UUID paymentId);

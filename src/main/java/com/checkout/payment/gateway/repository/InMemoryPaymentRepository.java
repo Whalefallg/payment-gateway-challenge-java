@@ -28,7 +28,9 @@ public class InMemoryPaymentRepository implements PaymentRepository {
   public AdmissionResult admitAndClaim(
       String merchantId, String idempotencyKey, PaymentCommand command) {
     if (idempotencyKey == null) {
-      throw new IllegalArgumentException("Unkeyed payments must use saveDefinitive");
+      PaymentRecord created = newRecord(merchantId, null, command, PaymentStatus.IN_FLIGHT);
+      payments.put(created.paymentId(), created);
+      return AdmissionResult.created(created);
     }
     IdempotencyIdentity identity = new IdempotencyIdentity(merchantId, idempotencyKey);
     synchronized (admissionLock) {
@@ -44,14 +46,6 @@ public class InMemoryPaymentRepository implements PaymentRepository {
       idempotency.put(identity, created.paymentId());
       return AdmissionResult.created(created);
     }
-  }
-
-  @Override
-  public PaymentRecord saveDefinitive(
-      String merchantId, PaymentCommand command, DefinitiveOutcome outcome) {
-    PaymentRecord record = newRecord(merchantId, null, command, outcome.paymentStatus());
-    payments.put(record.paymentId(), record);
-    return record;
   }
 
   private PaymentRecord newRecord(

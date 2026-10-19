@@ -273,15 +273,26 @@ class PaymentGatewayControllerTest {
   }
 
   @Test
-  void upstreamFailureUsesInfrastructureErrorAndCreatesNoRecord() throws Exception {
+  void unkeyedUpstreamFailureUsesInfrastructureErrorAndCreatesQueryableUnknown()
+      throws Exception {
     when(bankClient.process(any())).thenThrow(new GatewayException(
         HttpStatus.SERVICE_UNAVAILABLE, "BANK_UNAVAILABLE", "Bank is unavailable"));
-    mvc.perform(post("/payments").contentType(MediaType.APPLICATION_JSON).content(validJson(1)))
+    MvcResult failed = mvc.perform(
+            post("/payments").contentType(MediaType.APPLICATION_JSON).content(validJson(1)))
         .andExpect(status().isServiceUnavailable())
         .andExpect(jsonPath("$.code").value("BANK_UNAVAILABLE"))
-        .andExpect(jsonPath("$.status").doesNotExist())
-        .andExpect(jsonPath("$.request_id").isNotEmpty());
-    org.junit.jupiter.api.Assertions.assertEquals(0, repository.size());
+        .andExpect(jsonPath("$.status").value("Unknown"))
+        .andExpect(jsonPath("$.payment_id").isNotEmpty())
+        .andExpect(jsonPath("$.request_id").isNotEmpty())
+        .andReturn();
+    String id = com.jayway.jsonpath.JsonPath.read(
+        failed.getResponse().getContentAsString(), "$.payment_id");
+
+    mvc.perform(get("/payments/{id}", id))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.status").value("Unknown"));
+    org.junit.jupiter.api.Assertions.assertEquals(1, repository.size());
+    verify(bankClient, times(1)).process(any());
   }
 
   @Test

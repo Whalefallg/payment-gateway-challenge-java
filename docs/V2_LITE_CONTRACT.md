@@ -15,11 +15,12 @@ the keyed extension. This document is the acceptance contract for the refactor.
 
 ## Requests without Idempotency-Key
 
-Every unkeyed request is independent. It validates, calls the bank first, and persists exactly one
-record only after an explicit `Authorized` or `Declined` result. A mapped or unexpected bank failure
-creates no record and retains the V1 502/503/504 response without payment identity or business
-status. This deliberately small compatibility path has no admission, execution claim, replay, or
-cross-request deduplication behavior.
+Every unkeyed request is independent. It validates, atomically admits a new `IN_FLIGHT` payment,
+and only the caller receiving `CREATED` may invoke the bank. A null key is never inserted into the
+idempotency index and no synthetic key is generated. Identical unkeyed POSTs therefore create
+different payment IDs and each invokes the bank. A mapped bank failure retains its existing
+502/503/504 classification, stores `UNKNOWN`, and returns the payment identity and status so the
+record can be queried. There is no cross-request deduplication or automatic retry.
 
 ## Requests with Idempotency-Key
 
@@ -29,9 +30,10 @@ The key is scoped by merchant. Atomic `admitAndClaim` compares a keyed HMAC fing
 - returns the existing record for the same payment semantics; or
 - reports a conflict without changing the existing record.
 
-Only `CREATED` grants permission to invoke the bank. Observing `IN_FLIGHT` never grants ownership.
-Bank I/O happens outside repository atomic sections. A replay is `202 Accepted` while `IN_FLIGHT`,
-and `200 OK` when `AUTHORIZED`, `DECLINED`, or `UNKNOWN`; it never invokes the bank again.
+For every request, only `CREATED` grants permission to invoke the bank. Observing `IN_FLIGHT` never
+grants ownership. Bank I/O happens outside repository atomic sections. A keyed replay returns
+`202 Accepted` while `IN_FLIGHT`, and `200 OK` when `AUTHORIZED`, `DECLINED`, or `UNKNOWN`; it
+never invokes the bank again.
 
 The fingerprint covers operation, amount, currency, expiry, and the full instrument identity using
 HMAC-SHA-256. Neither PAN nor CVV is stored. CVV and CVV-derived data are intentionally excluded, so
@@ -40,17 +42,16 @@ expiry violation caused only by time passing is ignored after the stored fingerp
 
 ## State and time semantics
 
-The persisted keyed lifecycle is:
+The persisted lifecycle for every admitted request is:
 
 `IN_FLIGHT -> AUTHORIZED | DECLINED | UNKNOWN`
 
-An unkeyed definitive record is created directly as `AUTHORIZED` or `DECLINED`. `REJECTED` is an API
-result and is never persisted. `UNKNOWN` means the bank invocation may have taken effect but its
-outcome is unresolved; it is not a decline, a confirmed no-effect result, or a completed
-authorization. V2-Lite has no retry, takeover, recovery, or reconciliation path from `UNKNOWN`.
+`REJECTED` is an API result and is never persisted. `UNKNOWN` is a safety extension beyond the
+challenge's definitive outcomes: the bank invocation may have taken effect but its outcome is
+unresolved. It is not a decline, a confirmed no-effect result, or a completed authorization.
+V2-Lite has no retry, takeover, recovery, or reconciliation path from `UNKNOWN`.
 
-- `createdAt`: when the record first becomes visible in this repository. For keyed records this is
-  admission time; for unkeyed records it is definitive-persistence time after bank success.
+- `createdAt`: admission time, when the record first becomes visible in this repository.
 - `updatedAt`: the instant of the latest applied state change. Idempotent/no-op operations do not
   change it. It is never before `createdAt`.
 - `completedAt`: present only for `AUTHORIZED` or `DECLINED`, at the instant that definitive outcome

@@ -121,18 +121,21 @@ class InMemoryPaymentRepositoryTest {
   }
 
   @Test
-  void unkeyedDefinitivePersistenceRejectsAdmissionAndCreatesCompletedRecord() {
+  void nullKeyAdmissionsAreIndependentAndNeverEnterIdempotencyIndex() {
     InMemoryPaymentRepository repository = repository();
-    assertThrows(IllegalArgumentException.class,
-        () -> repository.admitAndClaim("merchant", null, command("fp", 10, "GBP")));
+    AdmissionResult first = repository.admitAndClaim(
+        "merchant", null, command("fp", 10, "GBP"));
+    AdmissionResult second = repository.admitAndClaim(
+        "merchant", null, command("fp", 10, "GBP"));
 
-    PaymentRecord stored = repository.saveDefinitive(
-        "merchant", command("fp", 10, "GBP"), DefinitiveOutcome.DECLINED);
-
-    assertEquals(PaymentStatus.DECLINED, stored.status());
-    assertEquals(stored.createdAt(), stored.updatedAt());
-    assertEquals(stored.createdAt(), stored.completedAt());
-    assertEquals(1, repository.size());
+    assertEquals(AdmissionResult.Kind.CREATED, first.kind());
+    assertEquals(AdmissionResult.Kind.CREATED, second.kind());
+    assertTrue(!first.payment().paymentId().equals(second.payment().paymentId()));
+    assertEquals(PaymentStatus.IN_FLIGHT, first.payment().status());
+    assertEquals(first.payment().createdAt(), first.payment().updatedAt());
+    assertNull(first.payment().completedAt());
+    assertTrue(repository.findByIdempotencyKey("merchant", null).isEmpty());
+    assertEquals(2, repository.size());
   }
 
   @Test

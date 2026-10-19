@@ -93,6 +93,25 @@ class PaymentGatewayIntegrationTest {
   }
 
   @Test
+  void realUnkeyedBank503PersistsQueryableUnknown() throws Exception {
+    MvcResult failed = mvc.perform(post("/payments").contentType(MediaType.APPLICATION_JSON)
+            .content(validJson("2222405343240000")))
+        .andExpect(status().isServiceUnavailable())
+        .andExpect(jsonPath("$.code").value("BANK_UNAVAILABLE"))
+        .andExpect(jsonPath("$.status").value("Unknown"))
+        .andExpect(jsonPath("$.payment_id").isNotEmpty())
+        .andReturn();
+    String id = com.jayway.jsonpath.JsonPath.read(
+        failed.getResponse().getContentAsString(), "$.payment_id");
+
+    mvc.perform(get("/payments/{id}", id))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.status").value("Unknown"));
+    assertEqualsOneBankCall();
+    assertTrue(repository.size() == 1);
+  }
+
+  @Test
   void malformedPaymentPathDoesNotWriteRawSensitiveValueToLogs(CapturedOutput output)
       throws Exception {
     String sensitivePathValue = "4111111111111111-cvv-987";
@@ -110,6 +129,14 @@ class PaymentGatewayIntegrationTest {
       server.createContext("/payments", exchange -> {
         BANK_CALLS.incrementAndGet();
         String request = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+        if (request.contains("0000\"")) {
+          byte[] response = "{}".getBytes(StandardCharsets.UTF_8);
+          exchange.getResponseHeaders().set("Content-Type", "application/json");
+          exchange.sendResponseHeaders(503, response.length);
+          exchange.getResponseBody().write(response);
+          exchange.close();
+          return;
+        }
         boolean authorized = request.contains("0001\"");
         byte[] response = ("{\"authorized\":" + authorized + "}").getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", "application/json");
