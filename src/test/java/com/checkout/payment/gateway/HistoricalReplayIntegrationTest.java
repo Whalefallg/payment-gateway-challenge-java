@@ -50,7 +50,7 @@ class HistoricalReplayIntegrationTest {
 
   @Test
   void historicalReplayUsesRealValidationAndIgnoresOnlyElapsedExpiry() throws Exception {
-    when(bankClient.process(any())).thenReturn(BankOutcome.AUTHORIZED);
+    when(bankClient.authorize(any())).thenReturn(BankOutcome.AUTHORIZED);
     String body = """
         {"card_number":"2222405343240001","expiry_month":2,"expiry_year":2026,
          "currency":"GBP","amount":1050,"cvv":"007"}
@@ -72,7 +72,7 @@ class HistoricalReplayIntegrationTest {
         .andExpect(jsonPath("$.id").value(id))
         .andExpect(jsonPath("$.status").value("Authorized"));
 
-    verify(bankClient, times(1)).process(any());
+    verify(bankClient, times(1)).authorize(any());
   }
 
   @TestConfiguration

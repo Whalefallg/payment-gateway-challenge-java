@@ -43,7 +43,7 @@ class BankClientTest {
             .body("{\"authorized\":true,\"authorization_code\":\"anything\"}"));
 
     assertEquals(BankOutcome.AUTHORIZED,
-        new BankClient(restTemplate, "http://bank.test/").process(request("2222405343240001")));
+        new BankClient(restTemplate, "http://bank.test/").authorize(request("2222405343240001")));
     server.verify();
   }
 
@@ -85,7 +85,7 @@ class BankClientTest {
         .setConnectTimeout(Duration.ofMillis(200)).setReadTimeout(Duration.ofMillis(200)).build();
     GatewayException ex = assertThrows(GatewayException.class,
         () -> new BankClient(restTemplate, "http://127.0.0.1:" + unusedPort)
-            .process(request("2222405343240001")));
+            .authorize(request("2222405343240001")));
     assertEquals("BANK_UNAVAILABLE", ex.getErrorCode());
   }
 
@@ -113,7 +113,7 @@ class BankClientTest {
           .setConnectTimeout(Duration.ofMillis(200)).setReadTimeout(Duration.ofMillis(100)).build();
       GatewayException ex = assertThrows(GatewayException.class,
           () -> new BankClient(restTemplate, "http://127.0.0.1:" + server.getAddress().getPort())
-              .process(request("2222405343240001")));
+              .authorize(request("2222405343240001")));
       assertEquals("BANK_TIMEOUT", ex.getErrorCode());
       assertEquals(1, calls.get());
     } finally {
@@ -127,7 +127,8 @@ class BankClientTest {
     server.expect(once(), requestTo("http://bank.test/payments"))
         .andRespond(withRawStatus(status).contentType(MediaType.APPLICATION_JSON).body(body));
     try {
-      return new BankClient(restTemplate, "http://bank.test").process(request("2222405343240001"));
+      return new BankClient(restTemplate, "http://bank.test")
+          .authorize(request("2222405343240001"));
     } finally {
       server.verify();
     }

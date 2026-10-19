@@ -32,10 +32,10 @@ class InMemoryPaymentRepositoryTest {
   @Test
   void concurrentAdmitAndClaimHasExactlyOneExecutionOwner() throws Exception {
     InMemoryPaymentRepository repository = repository();
-    PaymentAdmissionCommand command = command("fingerprint", 1050, "GBP");
+    PaymentAdmissionCommand command = admissionCommand("fingerprint", 1050, "GBP");
     CountDownLatch ready = new CountDownLatch(16);
     CountDownLatch start = new CountDownLatch(1);
-    List<Callable<AdmissionResult>> tasks = new ArrayList<>();
+    List<Callable<PaymentAdmissionResult>> tasks = new ArrayList<>();
     for (int i = 0; i < 16; i++) {
       tasks.add(() -> {
         ready.countDown();
@@ -43,16 +43,19 @@ class InMemoryPaymentRepositoryTest {
         return repository.admitAndClaim("merchant", "same-key", command);
       });
     }
-    List<Future<AdmissionResult>> futures = tasks.stream().map(executor::submit).toList();
+    List<Future<PaymentAdmissionResult>> futures =
+        tasks.stream().map(executor::submit).toList();
     org.junit.jupiter.api.Assertions.assertTrue(ready.await(5, TimeUnit.SECONDS));
     start.countDown();
-    List<AdmissionResult> results = new ArrayList<>();
-    for (Future<AdmissionResult> future : futures) {
+    List<PaymentAdmissionResult> results = new ArrayList<>();
+    for (Future<PaymentAdmissionResult> future : futures) {
       results.add(future.get(5, TimeUnit.SECONDS));
     }
 
-    assertEquals(1, results.stream().filter(r -> r.kind() == AdmissionResult.Kind.CREATED).count());
-    assertEquals(15, results.stream().filter(r -> r.kind() == AdmissionResult.Kind.EXISTING).count());
+    assertEquals(1, results.stream()
+        .filter(r -> r.kind() == PaymentAdmissionResult.Kind.CREATED).count());
+    assertEquals(15, results.stream()
+        .filter(r -> r.kind() == PaymentAdmissionResult.Kind.EXISTING).count());
     PaymentRecord payment = results.get(0).payment();
     assertEquals(PaymentStatus.IN_FLIGHT, payment.status());
     assertEquals(1, results.stream().map(r -> r.payment().paymentId()).distinct().count());
@@ -63,7 +66,7 @@ class InMemoryPaymentRepositoryTest {
   void terminalAndUnknownTransitionsAreAtomicAndKeepTimestampInvariants() {
     InMemoryPaymentRepository repository = repository();
     PaymentRecord payment = repository.admitAndClaim(
-        "merchant", "key", command("fp", 10, "GBP")).payment();
+        "merchant", "key", admissionCommand("fp", 10, "GBP")).payment();
     assertNull(payment.completedAt());
 
     PaymentRecord authorized = repository.complete(
@@ -86,7 +89,7 @@ class InMemoryPaymentRepositoryTest {
   void unknownIsUncompletedAndHasNoOutgoingDefinitiveTransition() {
     InMemoryPaymentRepository repository = repository();
     PaymentRecord payment = repository.admitAndClaim(
-        "merchant", "key", command("fp", 10, "GBP")).payment();
+        "merchant", "key", admissionCommand("fp", 10, "GBP")).payment();
     PaymentRecord unknown = repository.markUnknown(payment.paymentId());
 
     assertEquals(PaymentStatus.UNKNOWN, unknown.status());
@@ -100,7 +103,7 @@ class InMemoryPaymentRepositoryTest {
       throws Exception {
     InMemoryPaymentRepository repository = repository();
     PaymentRecord payment = repository.admitAndClaim(
-        "merchant", "key", command("fp", 10, "GBP")).payment();
+        "merchant", "key", admissionCommand("fp", 10, "GBP")).payment();
     CountDownLatch ready = new CountDownLatch(2);
     CountDownLatch start = new CountDownLatch(1);
     Future<Object> authorized = executor.submit(() -> completeAfterStart(
@@ -123,13 +126,13 @@ class InMemoryPaymentRepositoryTest {
   @Test
   void nullKeyAdmissionsAreIndependentAndNeverEnterIdempotencyIndex() {
     InMemoryPaymentRepository repository = repository();
-    AdmissionResult first = repository.admitAndClaim(
-        "merchant", null, command("fp", 10, "GBP"));
-    AdmissionResult second = repository.admitAndClaim(
-        "merchant", null, command("fp", 10, "GBP"));
+    PaymentAdmissionResult first = repository.admitAndClaim(
+        "merchant", null, admissionCommand("fp", 10, "GBP"));
+    PaymentAdmissionResult second = repository.admitAndClaim(
+        "merchant", null, admissionCommand("fp", 10, "GBP"));
 
-    assertEquals(AdmissionResult.Kind.CREATED, first.kind());
-    assertEquals(AdmissionResult.Kind.CREATED, second.kind());
+    assertEquals(PaymentAdmissionResult.Kind.CREATED, first.kind());
+    assertEquals(PaymentAdmissionResult.Kind.CREATED, second.kind());
     assertTrue(!first.payment().paymentId().equals(second.payment().paymentId()));
     assertEquals(PaymentStatus.IN_FLIGHT, first.payment().status());
     assertEquals(first.payment().createdAt(), first.payment().updatedAt());
@@ -168,7 +171,8 @@ class InMemoryPaymentRepositoryTest {
     }
   }
 
-  static PaymentAdmissionCommand command(String fingerprint, int amount, String currency) {
+  static PaymentAdmissionCommand admissionCommand(
+      String fingerprint, int amount, String currency) {
     return new PaymentAdmissionCommand(fingerprint, amount, currency, "0001", 12, 2030);
   }
 }

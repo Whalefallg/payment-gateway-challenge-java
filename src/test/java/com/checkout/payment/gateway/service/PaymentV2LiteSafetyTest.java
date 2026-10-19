@@ -17,7 +17,7 @@ import com.checkout.payment.gateway.exception.GatewayException;
 import com.checkout.payment.gateway.idempotency.RequestFingerprint;
 import com.checkout.payment.gateway.model.PaymentRecord;
 import com.checkout.payment.gateway.model.PostPaymentRequest;
-import com.checkout.payment.gateway.repository.AdmissionResult;
+import com.checkout.payment.gateway.repository.PaymentAdmissionResult;
 import com.checkout.payment.gateway.repository.InMemoryPaymentRepository;
 import com.checkout.payment.gateway.repository.PaymentRepository;
 import jakarta.validation.Validator;
@@ -51,7 +51,7 @@ class PaymentV2LiteSafetyTest {
     BankClient bank = mock(BankClient.class);
     CountDownLatch entered = new CountDownLatch(1);
     CountDownLatch release = new CountDownLatch(1);
-    when(bank.process(any())).thenAnswer(invocation -> {
+    when(bank.authorize(any())).thenAnswer(invocation -> {
       entered.countDown();
       assertTrue(release.await(5, TimeUnit.SECONDS));
       return BankOutcome.AUTHORIZED;
@@ -66,7 +66,7 @@ class PaymentV2LiteSafetyTest {
     release.countDown();
 
     assertEquals(PaymentStatus.AUTHORIZED, first.get(5, TimeUnit.SECONDS));
-    verify(bank, times(1)).process(any());
+    verify(bank, times(1)).authorize(any());
   }
 
   @Test
@@ -75,7 +75,7 @@ class PaymentV2LiteSafetyTest {
     BankClient bank = mock(BankClient.class);
     CountDownLatch entered = new CountDownLatch(1);
     CountDownLatch release = new CountDownLatch(1);
-    when(bank.process(any())).thenAnswer(invocation -> {
+    when(bank.authorize(any())).thenAnswer(invocation -> {
       entered.countDown();
       assertTrue(release.await(5, TimeUnit.SECONDS));
       return BankOutcome.AUTHORIZED;
@@ -91,7 +91,7 @@ class PaymentV2LiteSafetyTest {
     release.countDown();
 
     assertEquals(PaymentStatus.AUTHORIZED, first.get(5, TimeUnit.SECONDS));
-    verify(bank, times(1)).process(any());
+    verify(bank, times(1)).authorize(any());
     assertEquals(1, repository.size());
   }
 
@@ -101,7 +101,7 @@ class PaymentV2LiteSafetyTest {
     BankClient bank = mock(BankClient.class);
     CountDownLatch slowEntered = new CountDownLatch(1);
     CountDownLatch releaseSlow = new CountDownLatch(1);
-    when(bank.process(any())).thenAnswer(invocation -> {
+    when(bank.authorize(any())).thenAnswer(invocation -> {
       PostPaymentRequest request = invocation.getArgument(0);
       if (request.getAmount() == 1) {
         slowEntered.countDown();
@@ -123,7 +123,7 @@ class PaymentV2LiteSafetyTest {
     assertEquals(PaymentStatus.AUTHORIZED, otherMerchant.get(2, TimeUnit.SECONDS));
     releaseSlow.countDown();
     assertEquals(PaymentStatus.AUTHORIZED, slow.get(5, TimeUnit.SECONDS));
-    verify(bank, times(3)).process(any());
+    verify(bank, times(3)).authorize(any());
   }
 
   @Test
@@ -132,13 +132,13 @@ class PaymentV2LiteSafetyTest {
     PaymentRecord inFlight = record(PaymentStatus.IN_FLIGHT);
     when(repository.findByIdempotencyKey(any(), any())).thenReturn(java.util.Optional.empty());
     when(repository.admitAndClaim(any(), any(), any()))
-        .thenReturn(AdmissionResult.created(inFlight));
+        .thenReturn(PaymentAdmissionResult.created(inFlight));
     IllegalStateException localFailure = new IllegalStateException("local state update failed");
     when(repository.markUnknown(inFlight.paymentId())).thenThrow(localFailure);
     BankClient bank = mock(BankClient.class);
     GatewayException bankFailure = new GatewayException(
         HttpStatus.GATEWAY_TIMEOUT, "BANK_TIMEOUT", "Bank request timed out");
-    when(bank.process(any())).thenThrow(bankFailure);
+    when(bank.authorize(any())).thenThrow(bankFailure);
 
     IllegalStateException thrown = assertThrows(IllegalStateException.class,
         () -> service(repository, bank)
@@ -154,7 +154,7 @@ class PaymentV2LiteSafetyTest {
     InMemoryPaymentRepository repository = repository();
     BankClient bank = mock(BankClient.class);
     IllegalStateException adapterBug = new IllegalStateException("adapter bug");
-    when(bank.process(any())).thenThrow(adapterBug);
+    when(bank.authorize(any())).thenThrow(adapterBug);
     PaymentGatewayService service = service(repository, bank);
 
     IllegalStateException thrown = assertThrows(IllegalStateException.class,

@@ -11,8 +11,8 @@ import com.checkout.payment.gateway.model.ErrorResponse.ErrorDetail;
 import com.checkout.payment.gateway.model.PaymentRecord;
 import com.checkout.payment.gateway.model.PaymentResponse;
 import com.checkout.payment.gateway.model.PostPaymentRequest;
-import com.checkout.payment.gateway.repository.AdmissionResult;
 import com.checkout.payment.gateway.repository.PaymentAdmissionCommand;
+import com.checkout.payment.gateway.repository.PaymentAdmissionResult;
 import com.checkout.payment.gateway.repository.PaymentRepository;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validator;
@@ -76,12 +76,12 @@ public class PaymentGatewayService {
     }
     rejectIfInvalid(violations);
 
-    AdmissionResult admission = repository.admitAndClaim(
-        merchantId, idempotencyKey, command(request));
-    if (admission.kind() == AdmissionResult.Kind.CONFLICT) {
+    PaymentAdmissionResult admission = repository.admitAndClaim(
+        merchantId, idempotencyKey, toAdmissionCommand(request));
+    if (admission.kind() == PaymentAdmissionResult.Kind.CONFLICT) {
       throw conflict(admission.payment());
     }
-    if (admission.kind() == AdmissionResult.Kind.EXISTING) {
+    if (admission.kind() == PaymentAdmissionResult.Kind.EXISTING) {
       return PaymentSubmission.replayed(toResponse(admission.payment()));
     }
 
@@ -95,7 +95,7 @@ public class PaymentGatewayService {
   private PaymentRecord executeClaimed(UUID paymentId, PostPaymentRequest request) {
     BankOutcome bankOutcome;
     try {
-      bankOutcome = bankClient.process(request);
+      bankOutcome = bankClient.authorize(request);
     } catch (GatewayException bankFailure) {
       PaymentRecord current = recordUnknown(paymentId, bankFailure);
       if (isDefinitive(current.status())) return current;
@@ -167,7 +167,7 @@ public class PaymentGatewayService {
     return value.replaceAll("([a-z])([A-Z]+)", "$1_$2").toLowerCase();
   }
 
-  private PaymentAdmissionCommand command(PostPaymentRequest request) {
+  private PaymentAdmissionCommand toAdmissionCommand(PostPaymentRequest request) {
     String pan = request.getCardNumber();
     return new PaymentAdmissionCommand(fingerprint.create(request), request.getAmount(),
         request.getCurrency(), pan.substring(pan.length() - 4), request.getExpiryMonth(),

@@ -62,7 +62,7 @@ class PaymentGatewayControllerTest {
 
   @Test
   void authorizedPaymentIsCreatedAndRetrievable() throws Exception {
-    when(bankClient.process(any())).thenReturn(BankOutcome.AUTHORIZED);
+    when(bankClient.authorize(any())).thenReturn(BankOutcome.AUTHORIZED);
     MvcResult created = mvc.perform(post("/payments")
             .contentType(MediaType.APPLICATION_JSON).content(validJson(1050)))
         .andExpect(status().isCreated())
@@ -83,7 +83,7 @@ class PaymentGatewayControllerTest {
 
   @Test
   void declinedPaymentIsStillCreated() throws Exception {
-    when(bankClient.process(any())).thenReturn(BankOutcome.DECLINED);
+    when(bankClient.authorize(any())).thenReturn(BankOutcome.DECLINED);
     mvc.perform(post("/payments").contentType(MediaType.APPLICATION_JSON)
             .content(validJson(0).replace("0001", "0002")))
         .andExpect(status().isCreated())
@@ -110,7 +110,7 @@ class PaymentGatewayControllerTest {
         .andExpect(jsonPath("$.status").value("Rejected"))
         .andExpect(jsonPath("$.code").value("INVALID_PAYMENT_REQUEST"))
         .andExpect(jsonPath("$.details", hasSize(1)));
-    verify(bankClient, never()).process(any(PostPaymentRequest.class));
+    verify(bankClient, never()).authorize(any(PostPaymentRequest.class));
     org.junit.jupiter.api.Assertions.assertEquals(0, repository.size());
   }
 
@@ -122,12 +122,12 @@ class PaymentGatewayControllerTest {
     mvc.perform(post("/payments").contentType(MediaType.APPLICATION_JSON)
             .content(validJson(1).replace("\"007\"", "7")))
         .andExpect(status().isBadRequest());
-    verify(bankClient, never()).process(any());
+    verify(bankClient, never()).authorize(any());
   }
 
   @Test
   void zeroAndNegativeIntegerAmountsAreAccepted() throws Exception {
-    when(bankClient.process(any())).thenReturn(BankOutcome.AUTHORIZED);
+    when(bankClient.authorize(any())).thenReturn(BankOutcome.AUTHORIZED);
     mvc.perform(post("/payments").contentType(MediaType.APPLICATION_JSON).content(validJson(0)))
         .andExpect(status().isCreated()).andExpect(jsonPath("$.amount").value(0));
     mvc.perform(post("/payments").contentType(MediaType.APPLICATION_JSON).content(validJson(-1)))
@@ -148,12 +148,12 @@ class PaymentGatewayControllerTest {
       mvc.perform(post("/payments").contentType(MediaType.APPLICATION_JSON).content(body))
           .andExpect(status().isBadRequest());
     }
-    verify(bankClient, never()).process(any());
+    verify(bankClient, never()).authorize(any());
   }
 
   @Test
   void cardCvvAndMonthBoundariesAreEnforced() throws Exception {
-    when(bankClient.process(any())).thenReturn(BankOutcome.AUTHORIZED);
+    when(bankClient.authorize(any())).thenReturn(BankOutcome.AUTHORIZED);
     int futureYear = YearMonth.now(clock).plusYears(2).getYear();
     for (String valid : new String[] {
         json(6, futureYear, "12345678901234", "EUR", "123", "1"),
@@ -172,7 +172,7 @@ class PaymentGatewayControllerTest {
       mvc.perform(post("/payments").contentType(MediaType.APPLICATION_JSON).content(invalid))
           .andExpect(status().isBadRequest());
     }
-    verify(bankClient, never()).process(any());
+    verify(bankClient, never()).authorize(any());
   }
 
   @ParameterizedTest(name = "missing required field {0}")
@@ -194,15 +194,15 @@ class PaymentGatewayControllerTest {
   @ParameterizedTest(name = "expiry month {0} returns HTTP {1}")
   @MethodSource("expiryMonthBoundaries")
   void expiryMonthBoundariesAreEnforced(int month, int expectedStatus) throws Exception {
-    when(bankClient.process(any())).thenReturn(BankOutcome.AUTHORIZED);
+    when(bankClient.authorize(any())).thenReturn(BankOutcome.AUTHORIZED);
     int futureYear = YearMonth.now(clock).plusYears(2).getYear();
     mvc.perform(post("/payments").contentType(MediaType.APPLICATION_JSON)
             .content(json(month, futureYear, "2222405343240001", "USD", "007", "1")))
         .andExpect(status().is(expectedStatus));
     if (expectedStatus == 400) {
-      verify(bankClient, never()).process(any());
+      verify(bankClient, never()).authorize(any());
     } else {
-      verify(bankClient).process(any());
+      verify(bankClient).authorize(any());
     }
   }
 
@@ -216,7 +216,7 @@ class PaymentGatewayControllerTest {
 
   @Test
   void expiredCurrentAndNextMonthFollowUtcContract() throws Exception {
-    when(bankClient.process(any())).thenReturn(BankOutcome.AUTHORIZED);
+    when(bankClient.authorize(any())).thenReturn(BankOutcome.AUTHORIZED);
     YearMonth current = YearMonth.now(clock);
     for (YearMonth invalid : new YearMonth[] {current.minusMonths(1), current}) {
       mvc.perform(post("/payments").contentType(MediaType.APPLICATION_JSON)
@@ -224,15 +224,15 @@ class PaymentGatewayControllerTest {
                   "2222405343240001", "USD", "007", "1")))
           .andExpect(status().isBadRequest());
     }
-    verify(bankClient, never()).process(any());
+    verify(bankClient, never()).authorize(any());
     reset(bankClient);
-    when(bankClient.process(any())).thenReturn(BankOutcome.AUTHORIZED);
+    when(bankClient.authorize(any())).thenReturn(BankOutcome.AUTHORIZED);
     YearMonth next = current.plusMonths(1);
     mvc.perform(post("/payments").contentType(MediaType.APPLICATION_JSON)
             .content(json(next.getMonthValue(), next.getYear(),
                 "2222405343240001", "USD", "007", "1")))
         .andExpect(status().isCreated());
-    verify(bankClient).process(any());
+    verify(bankClient).authorize(any());
   }
 
   @ParameterizedTest(name = "invalid amount JSON token {0}")
@@ -244,12 +244,12 @@ class PaymentGatewayControllerTest {
   @ParameterizedTest(name = "valid amount integer boundary {0}")
   @MethodSource("validAmountBoundaries")
   void signedIntegerAmountBoundariesAreAccepted(String amountToken) throws Exception {
-    when(bankClient.process(any())).thenReturn(BankOutcome.AUTHORIZED);
+    when(bankClient.authorize(any())).thenReturn(BankOutcome.AUTHORIZED);
     mvc.perform(post("/payments").contentType(MediaType.APPLICATION_JSON)
             .content(validJsonToken(amountToken)))
         .andExpect(status().isCreated())
         .andExpect(jsonPath("$.amount").value(Long.parseLong(amountToken)));
-    verify(bankClient).process(any());
+    verify(bankClient).authorize(any());
   }
 
   @Test
@@ -269,13 +269,13 @@ class PaymentGatewayControllerTest {
     mvc.perform(get("/payments/{id}", UUID.randomUUID()))
         .andExpect(status().isNotFound())
         .andExpect(jsonPath("$.code").value("PAYMENT_NOT_FOUND"));
-    verify(bankClient, never()).process(any());
+    verify(bankClient, never()).authorize(any());
   }
 
   @Test
   void unkeyedUpstreamFailureUsesInfrastructureErrorAndCreatesQueryableUnknown()
       throws Exception {
-    when(bankClient.process(any())).thenThrow(new GatewayException(
+    when(bankClient.authorize(any())).thenThrow(new GatewayException(
         HttpStatus.SERVICE_UNAVAILABLE, "BANK_UNAVAILABLE", "Bank is unavailable"));
     MvcResult failed = mvc.perform(
             post("/payments").contentType(MediaType.APPLICATION_JSON).content(validJson(1)))
@@ -292,12 +292,12 @@ class PaymentGatewayControllerTest {
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.status").value("Unknown"));
     org.junit.jupiter.api.Assertions.assertEquals(1, repository.size());
-    verify(bankClient, times(1)).process(any());
+    verify(bankClient, times(1)).authorize(any());
   }
 
   @Test
   void keyedTimeoutCreatesQueryableUnknownAndReplayDoesNotReauthorize() throws Exception {
-    when(bankClient.process(any())).thenThrow(new GatewayException(
+    when(bankClient.authorize(any())).thenThrow(new GatewayException(
         HttpStatus.GATEWAY_TIMEOUT, "BANK_TIMEOUT", "Bank request timed out"));
     MvcResult failed = mvc.perform(post("/payments")
             .header("Idempotency-Key", "timeout-key")
@@ -320,13 +320,13 @@ class PaymentGatewayControllerTest {
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.id").value(id))
         .andExpect(jsonPath("$.status").value("Unknown"));
-    verify(bankClient, times(1)).process(any());
+    verify(bankClient, times(1)).authorize(any());
     org.junit.jupiter.api.Assertions.assertEquals(1, repository.size());
   }
 
   @Test
   void terminalReplayReturnsOkWhileInitialCreationRemainsCreated() throws Exception {
-    when(bankClient.process(any())).thenReturn(BankOutcome.AUTHORIZED);
+    when(bankClient.authorize(any())).thenReturn(BankOutcome.AUTHORIZED);
     MvcResult first = mvc.perform(post("/payments").header("Idempotency-Key", "replay-key")
             .contentType(MediaType.APPLICATION_JSON).content(validJson(1)))
         .andExpect(status().isCreated())
@@ -340,14 +340,14 @@ class PaymentGatewayControllerTest {
         .andExpect(header().string("Location", "/payments/" + id))
         .andExpect(jsonPath("$.id").value(id))
         .andExpect(jsonPath("$.status").value("Authorized"));
-    verify(bankClient, times(1)).process(any());
+    verify(bankClient, times(1)).authorize(any());
   }
 
   @Test
   void inProgressReplayReturnsAcceptedAndDoesNotInvokeBankAgain() throws Exception {
     CountDownLatch bankEntered = new CountDownLatch(1);
     CountDownLatch releaseBank = new CountDownLatch(1);
-    when(bankClient.process(any())).thenAnswer(invocation -> {
+    when(bankClient.authorize(any())).thenAnswer(invocation -> {
       bankEntered.countDown();
       releaseBank.await();
       return BankOutcome.AUTHORIZED;
@@ -367,7 +367,7 @@ class PaymentGatewayControllerTest {
           .andExpect(jsonPath("$.status").value("InFlight"));
       releaseBank.countDown();
       initial.get(5, TimeUnit.SECONDS);
-      verify(bankClient, times(1)).process(any());
+      verify(bankClient, times(1)).authorize(any());
     } finally {
       releaseBank.countDown();
       executor.shutdownNow();
@@ -376,7 +376,7 @@ class PaymentGatewayControllerTest {
 
   @Test
   void changedPayloadForSameKeyReturnsConflictWithoutBankCall() throws Exception {
-    when(bankClient.process(any())).thenReturn(BankOutcome.AUTHORIZED);
+    when(bankClient.authorize(any())).thenReturn(BankOutcome.AUTHORIZED);
     mvc.perform(post("/payments").header("Idempotency-Key", "conflict-key")
             .contentType(MediaType.APPLICATION_JSON).content(validJson(1)))
         .andExpect(status().isCreated());
@@ -384,7 +384,7 @@ class PaymentGatewayControllerTest {
             .contentType(MediaType.APPLICATION_JSON).content(validJson(2)))
         .andExpect(status().isConflict())
         .andExpect(jsonPath("$.code").value("IDEMPOTENCY_CONFLICT"));
-    verify(bankClient, times(1)).process(any());
+    verify(bankClient, times(1)).authorize(any());
     org.junit.jupiter.api.Assertions.assertEquals(1, repository.size());
   }
 
@@ -421,7 +421,7 @@ class PaymentGatewayControllerTest {
         .andExpect(status().isBadRequest())
         .andExpect(jsonPath("$.status").value("Rejected"))
         .andExpect(jsonPath("$.code").value("INVALID_PAYMENT_REQUEST"));
-    verify(bankClient, never()).process(any());
+    verify(bankClient, never()).authorize(any());
   }
 
   private static Stream<String> requiredFields() {

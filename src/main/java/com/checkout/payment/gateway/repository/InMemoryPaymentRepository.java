@@ -25,12 +25,12 @@ public class InMemoryPaymentRepository implements PaymentRepository {
   }
 
   @Override
-  public AdmissionResult admitAndClaim(
+  public PaymentAdmissionResult admitAndClaim(
       String merchantId, String idempotencyKey, PaymentAdmissionCommand command) {
     if (idempotencyKey == null) {
       PaymentRecord created = newRecord(merchantId, null, command, PaymentStatus.IN_FLIGHT);
       payments.put(created.paymentId(), created);
-      return AdmissionResult.created(created);
+      return PaymentAdmissionResult.created(created);
     }
     IdempotencyIdentity identity = new IdempotencyIdentity(merchantId, idempotencyKey);
     synchronized (admissionLock) {
@@ -38,13 +38,14 @@ public class InMemoryPaymentRepository implements PaymentRepository {
       if (existingId != null) {
         PaymentRecord existing = payments.get(existingId);
         return existing.requestFingerprint().equals(command.requestFingerprint())
-            ? AdmissionResult.existing(existing) : AdmissionResult.conflict(existing);
+            ? PaymentAdmissionResult.existing(existing)
+            : PaymentAdmissionResult.conflict(existing);
       }
       PaymentRecord created = newRecord(
           merchantId, idempotencyKey, command, PaymentStatus.IN_FLIGHT);
       payments.put(created.paymentId(), created);
       idempotency.put(identity, created.paymentId());
-      return AdmissionResult.created(created);
+      return PaymentAdmissionResult.created(created);
     }
   }
 

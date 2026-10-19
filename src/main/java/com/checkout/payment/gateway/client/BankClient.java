@@ -32,7 +32,7 @@ public class BankClient {
     this.paymentsUrl = bankBaseUrl.replaceAll("/+$", "") + "/payments";
   }
 
-  public BankOutcome process(PostPaymentRequest request) {
+  public BankOutcome authorize(PostPaymentRequest request) {
     BankRequest bankRequest = new BankRequest(
         request.getCardNumber(),
         String.format(Locale.ROOT, "%02d/%04d", request.getExpiryMonth(), request.getExpiryYear()),

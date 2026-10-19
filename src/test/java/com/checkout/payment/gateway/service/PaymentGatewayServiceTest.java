@@ -16,9 +16,9 @@ import com.checkout.payment.gateway.exception.GatewayException;
 import com.checkout.payment.gateway.idempotency.RequestFingerprint;
 import com.checkout.payment.gateway.model.PaymentRecord;
 import com.checkout.payment.gateway.model.PostPaymentRequest;
-import com.checkout.payment.gateway.repository.AdmissionResult;
 import com.checkout.payment.gateway.repository.InMemoryPaymentRepository;
 import com.checkout.payment.gateway.repository.PaymentAdmissionCommand;
+import com.checkout.payment.gateway.repository.PaymentAdmissionResult;
 import jakarta.validation.Validator;
 import java.time.Clock;
 import org.junit.jupiter.api.Test;
@@ -33,16 +33,17 @@ class PaymentGatewayServiceTest {
         new java.util.concurrent.atomic.AtomicReference<>();
     InMemoryPaymentRepository repository = new InMemoryPaymentRepository(Clock.systemUTC()) {
       @Override
-      public AdmissionResult admitAndClaim(
+      public PaymentAdmissionResult admitAndClaim(
           String merchantId, String idempotencyKey, PaymentAdmissionCommand command) {
-        AdmissionResult result = super.admitAndClaim(merchantId, idempotencyKey, command);
+        PaymentAdmissionResult result =
+            super.admitAndClaim(merchantId, idempotencyKey, command);
         admitted.set(result.payment());
         return result;
       }
     };
     PaymentGatewayService service = service(repository, bank);
     java.util.concurrent.atomic.AtomicInteger bankCalls = new java.util.concurrent.atomic.AtomicInteger();
-    when(bank.process(any())).thenAnswer(invocation -> {
+    when(bank.authorize(any())).thenAnswer(invocation -> {
       int call = bankCalls.incrementAndGet();
       assertEquals(call, repository.size(), "payment must be admitted before bank I/O");
       assertEquals(PaymentStatus.IN_FLIGHT,
@@ -65,7 +66,7 @@ class PaymentGatewayServiceTest {
     BankClient bank = mock(BankClient.class);
     InMemoryPaymentRepository repository = new InMemoryPaymentRepository(Clock.systemUTC());
     PaymentGatewayService service = service(repository, bank);
-    when(bank.process(any())).thenThrow(new GatewayException(
+    when(bank.authorize(any())).thenThrow(new GatewayException(
         HttpStatus.SERVICE_UNAVAILABLE, "BANK_UNAVAILABLE", "Bank is unavailable"));
 
     GatewayException failure = assertThrows(
@@ -83,7 +84,7 @@ class PaymentGatewayServiceTest {
     BankClient bank = mock(BankClient.class);
     InMemoryPaymentRepository repository = new InMemoryPaymentRepository(Clock.systemUTC());
     PaymentGatewayService service = service(repository, bank);
-    when(bank.process(any()))
+    when(bank.authorize(any()))
         .thenThrow(new GatewayException(
             HttpStatus.GATEWAY_TIMEOUT, "BANK_TIMEOUT", "Bank request timed out"))
         .thenReturn(BankOutcome.AUTHORIZED);
@@ -97,7 +98,7 @@ class PaymentGatewayServiceTest {
         repository.findById(first.getPaymentId()).orElseThrow().status());
     assertEquals(PaymentStatus.AUTHORIZED, second.status());
     assertEquals(2, repository.size());
-    verify(bank, times(2)).process(any());
+    verify(bank, times(2)).authorize(any());
   }
 
   @Test
@@ -105,7 +106,7 @@ class PaymentGatewayServiceTest {
     BankClient bank = mock(BankClient.class);
     InMemoryPaymentRepository repository = new InMemoryPaymentRepository(Clock.systemUTC());
     PaymentGatewayService service = service(repository, bank);
-    when(bank.process(any())).thenThrow(new GatewayException(
+    when(bank.authorize(any())).thenThrow(new GatewayException(
         HttpStatus.GATEWAY_TIMEOUT, "BANK_TIMEOUT", "Bank request timed out"));
     PostPaymentRequest first = request(1, "GBP", "0001");
 
@@ -118,7 +119,7 @@ class PaymentGatewayServiceTest {
         service.processPayment(changedCvv, "key", "merchant").status());
     assertEquals(PaymentStatus.UNKNOWN,
         repository.findById(timeout.getPaymentId()).orElseThrow().status());
-    verify(bank, times(1)).process(any());
+    verify(bank, times(1)).authorize(any());
   }
 
   @Test
@@ -134,7 +135,7 @@ class PaymentGatewayServiceTest {
       BankClient bank = mock(BankClient.class);
       InMemoryPaymentRepository repository = new InMemoryPaymentRepository(Clock.systemUTC());
       PaymentGatewayService service = service(repository, bank);
-      when(bank.process(any())).thenThrow(failures.get(index));
+      when(bank.authorize(any())).thenThrow(failures.get(index));
       String key = "ambiguous-" + index;
 
       GatewayException failure = assertThrows(GatewayException.class,
@@ -143,7 +144,7 @@ class PaymentGatewayServiceTest {
       assertEquals(PaymentStatus.UNKNOWN, failure.getPaymentStatus());
       assertEquals(PaymentStatus.UNKNOWN,
           service.processPayment(request(1, "GBP", "0001"), key, "merchant").status());
-      verify(bank, times(1)).process(any());
+      verify(bank, times(1)).authorize(any());
     }
   }
 
@@ -160,7 +161,7 @@ class PaymentGatewayServiceTest {
       BankClient bank = mock(BankClient.class);
       InMemoryPaymentRepository repository = new InMemoryPaymentRepository(Clock.systemUTC());
       PaymentGatewayService service = service(repository, bank);
-      when(bank.process(any())).thenThrow(bankFailure);
+      when(bank.authorize(any())).thenThrow(bankFailure);
 
       GatewayException response = assertThrows(GatewayException.class,
           () -> service.processPayment(request(1, "GBP", "0001")));
@@ -170,14 +171,14 @@ class PaymentGatewayServiceTest {
       assertEquals(PaymentStatus.UNKNOWN, stored.status());
       assertEquals(null, stored.completedAt());
       assertEquals(1, repository.size());
-      verify(bank, times(1)).process(any());
+      verify(bank, times(1)).authorize(any());
     }
   }
 
   @Test
   void sameKeyDifferentPanWithSameLastFourConflictsBeforeBank() {
     BankClient bank = mock(BankClient.class);
-    when(bank.process(any())).thenReturn(BankOutcome.AUTHORIZED);
+    when(bank.authorize(any())).thenReturn(BankOutcome.AUTHORIZED);
     InMemoryPaymentRepository repository = new InMemoryPaymentRepository(Clock.systemUTC());
     PaymentGatewayService service = service(repository, bank);
     service.processPayment(requestWithPan("2222405343240001"), "key", "merchant");
@@ -187,7 +188,7 @@ class PaymentGatewayServiceTest {
             requestWithPan("1111111111110001"), "key", "merchant"));
 
     assertEquals("IDEMPOTENCY_CONFLICT", conflict.getErrorCode());
-    verify(bank, times(1)).process(any());
+    verify(bank, times(1)).authorize(any());
   }
 
   private static PaymentGatewayService service(
