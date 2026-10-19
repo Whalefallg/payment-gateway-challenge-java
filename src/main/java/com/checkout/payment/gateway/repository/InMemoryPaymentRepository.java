@@ -25,7 +25,8 @@ public class InMemoryPaymentRepository implements PaymentRepository {
   }
 
   @Override
-  public AdmissionResult accept(String merchantId, String idempotencyKey, PaymentCommand command) {
+  public AdmissionResult admitAndClaim(
+      String merchantId, String idempotencyKey, PaymentCommand command) {
     if (idempotencyKey == null) {
       throw new IllegalArgumentException("Unkeyed payments must use saveDefinitive");
     }
@@ -38,7 +39,7 @@ public class InMemoryPaymentRepository implements PaymentRepository {
             ? AdmissionResult.existing(existing) : AdmissionResult.conflict(existing);
       }
       PaymentRecord created = newRecord(
-          merchantId, idempotencyKey, command, PaymentStatus.READY);
+          merchantId, idempotencyKey, command, PaymentStatus.IN_FLIGHT);
       payments.put(created.paymentId(), created);
       idempotency.put(identity, created.paymentId());
       return AdmissionResult.created(created);
@@ -75,25 +76,15 @@ public class InMemoryPaymentRepository implements PaymentRepository {
   }
 
   @Override
-  public TransitionResult claimExecution(UUID paymentId) {
-    return transition(paymentId, PaymentStatus.READY, PaymentStatus.IN_FLIGHT);
-  }
-
-  @Override
-  public TransitionResult markUnknown(UUID paymentId) {
-    return transition(paymentId, PaymentStatus.IN_FLIGHT, PaymentStatus.UNKNOWN);
-  }
-
-  private TransitionResult transition(
-      UUID paymentId, PaymentStatus expected, PaymentStatus target) {
-    AtomicReference<TransitionResult> result = new AtomicReference<>();
+  public PaymentRecord markUnknown(UUID paymentId) {
+    AtomicReference<PaymentRecord> result = new AtomicReference<>();
     payments.computeIfPresent(paymentId, (id, current) -> {
-      if (current.status() != expected) {
-        result.set(new TransitionResult(false, current));
+      if (current.status() != PaymentStatus.IN_FLIGHT) {
+        result.set(current);
         return current;
       }
-      PaymentRecord updated = withStatus(current, target, clock.instant());
-      result.set(new TransitionResult(true, updated));
+      PaymentRecord updated = withStatus(current, PaymentStatus.UNKNOWN, clock.instant());
+      result.set(updated);
       return updated;
     });
     if (result.get() != null) return result.get();

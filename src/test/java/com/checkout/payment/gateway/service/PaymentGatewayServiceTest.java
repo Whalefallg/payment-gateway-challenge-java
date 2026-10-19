@@ -78,6 +78,32 @@ class PaymentGatewayServiceTest {
   }
 
   @Test
+  void everyMappedAmbiguousBankFailurePersistsUnknownAndNeverRetries() {
+    var failures = java.util.List.of(
+        new GatewayException(HttpStatus.GATEWAY_TIMEOUT,
+            "BANK_TIMEOUT", "Bank request timed out"),
+        new GatewayException(HttpStatus.SERVICE_UNAVAILABLE,
+            "BANK_UNAVAILABLE", "Bank is unavailable"),
+        new GatewayException(HttpStatus.BAD_GATEWAY,
+            "BANK_RESPONSE_INVALID", "Bank returned an invalid response"));
+    for (int index = 0; index < failures.size(); index++) {
+      BankClient bank = mock(BankClient.class);
+      InMemoryPaymentRepository repository = new InMemoryPaymentRepository(Clock.systemUTC());
+      PaymentGatewayService service = service(repository, bank);
+      when(bank.process(any())).thenThrow(failures.get(index));
+      String key = "ambiguous-" + index;
+
+      GatewayException failure = assertThrows(GatewayException.class,
+          () -> service.processPayment(request(1, "GBP", "0001"), key, "merchant"));
+
+      assertEquals(PaymentStatus.UNKNOWN, failure.getPaymentStatus());
+      assertEquals(PaymentStatus.UNKNOWN,
+          service.processPayment(request(1, "GBP", "0001"), key, "merchant").status());
+      verify(bank, times(1)).process(any());
+    }
+  }
+
+  @Test
   void sameKeyDifferentPanWithSameLastFourConflictsBeforeBank() {
     BankClient bank = mock(BankClient.class);
     when(bank.process(any())).thenReturn(BankOutcome.AUTHORIZED);

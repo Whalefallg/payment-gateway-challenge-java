@@ -37,7 +37,7 @@ public class PaymentGatewayController {
     if (submission.kind() == PaymentSubmission.Kind.CREATED) {
       return ResponseEntity.created(location).body(response);
     }
-    if (response.status() == PaymentStatus.READY || response.status() == PaymentStatus.IN_FLIGHT) {
+    if (response.status() == PaymentStatus.IN_FLIGHT) {
       return ResponseEntity.accepted().location(location).body(response);
     }
     return ResponseEntity.ok().location(location).body(response);

@@ -14,7 +14,6 @@ import com.checkout.payment.gateway.model.PostPaymentRequest;
 import com.checkout.payment.gateway.repository.AdmissionResult;
 import com.checkout.payment.gateway.repository.PaymentCommand;
 import com.checkout.payment.gateway.repository.PaymentRepository;
-import com.checkout.payment.gateway.repository.TransitionResult;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validator;
 import java.util.Comparator;
@@ -85,7 +84,7 @@ public class PaymentGatewayService {
           toResponse(repository.saveDefinitive(merchantId, command, outcome)));
     }
 
-    AdmissionResult admission = repository.accept(merchantId, idempotencyKey, command);
+    AdmissionResult admission = repository.admitAndClaim(merchantId, idempotencyKey, command);
     if (admission.kind() == AdmissionResult.Kind.CONFLICT) {
       throw conflict(admission.payment());
     }
@@ -93,12 +92,11 @@ public class PaymentGatewayService {
       return PaymentSubmission.replayed(toResponse(admission.payment()));
     }
 
-    TransitionResult claim = repository.claimExecution(admission.payment().paymentId());
-    if (!claim.applied()) {
-      return PaymentSubmission.replayed(toResponse(claim.payment()));
-    }
-    LOG.info("Payment execution claimed payment_id={}", claim.payment().paymentId());
-    return PaymentSubmission.created(toResponse(executeClaimed(claim.payment().paymentId(), request)));
+    // CREATED is the execution-ownership token. Existing state, including IN_FLIGHT, never is.
+    LOG.info("Payment admitted and execution claimed payment_id={}",
+        admission.payment().paymentId());
+    return PaymentSubmission.created(toResponse(
+        executeClaimed(admission.payment().paymentId(), request)));
   }
 
   private PaymentRecord executeClaimed(UUID paymentId, PostPaymentRequest request) {
@@ -121,11 +119,11 @@ public class PaymentGatewayService {
 
   private PaymentRecord recordUnknown(UUID paymentId, RuntimeException bankFailure) {
     try {
-      TransitionResult result = repository.markUnknown(paymentId);
-      if (result.applied()) {
+      PaymentRecord result = repository.markUnknown(paymentId);
+      if (result.status() == PaymentStatus.UNKNOWN) {
         LOG.warn("Payment outcome uncertain payment_id={}", paymentId);
       }
-      return result.payment();
+      return result;
     } catch (RuntimeException localFailure) {
       if (localFailure != bankFailure) localFailure.addSuppressed(bankFailure);
       throw localFailure;

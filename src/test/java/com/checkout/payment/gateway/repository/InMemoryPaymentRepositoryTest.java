@@ -30,7 +30,7 @@ class InMemoryPaymentRepositoryTest {
   @AfterEach void stopExecutor() { executor.shutdownNow(); }
 
   @Test
-  void concurrentAdmissionsHaveOneCreatorAndOneExecutionOwner() throws Exception {
+  void concurrentAdmitAndClaimHasExactlyOneExecutionOwner() throws Exception {
     InMemoryPaymentRepository repository = repository();
     PaymentCommand command = command("fingerprint", 1050, "GBP");
     CountDownLatch ready = new CountDownLatch(16);
@@ -40,7 +40,7 @@ class InMemoryPaymentRepositoryTest {
       tasks.add(() -> {
         ready.countDown();
         start.await(5, TimeUnit.SECONDS);
-        return repository.accept("merchant", "same-key", command);
+        return repository.admitAndClaim("merchant", "same-key", command);
       });
     }
     List<Future<AdmissionResult>> futures = tasks.stream().map(executor::submit).toList();
@@ -54,18 +54,17 @@ class InMemoryPaymentRepositoryTest {
     assertEquals(1, results.stream().filter(r -> r.kind() == AdmissionResult.Kind.CREATED).count());
     assertEquals(15, results.stream().filter(r -> r.kind() == AdmissionResult.Kind.EXISTING).count());
     PaymentRecord payment = results.get(0).payment();
-    assertEquals(true, repository.claimExecution(payment.paymentId()).applied());
-    assertEquals(false, repository.claimExecution(payment.paymentId()).applied());
+    assertEquals(PaymentStatus.IN_FLIGHT, payment.status());
+    assertEquals(1, results.stream().map(r -> r.payment().paymentId()).distinct().count());
     assertEquals(1, repository.size());
   }
 
   @Test
   void terminalAndUnknownTransitionsAreAtomicAndKeepTimestampInvariants() {
     InMemoryPaymentRepository repository = repository();
-    PaymentRecord payment = repository.accept(
+    PaymentRecord payment = repository.admitAndClaim(
         "merchant", "key", command("fp", 10, "GBP")).payment();
     assertNull(payment.completedAt());
-    repository.claimExecution(payment.paymentId());
 
     PaymentRecord authorized = repository.complete(
         payment.paymentId(), DefinitiveOutcome.AUTHORIZED);
@@ -75,7 +74,7 @@ class InMemoryPaymentRepositoryTest {
     assertEquals(authorized, same);
     assertEquals(PaymentStatus.AUTHORIZED, authorized.status());
     assertEquals(authorized.updatedAt(), authorized.completedAt());
-    assertFalse(repository.markUnknown(payment.paymentId()).applied());
+    assertEquals(authorized, repository.markUnknown(payment.paymentId()));
     assertEquals(ConflictingPaymentOutcomeException.class,
         assertThrows(ConflictingPaymentOutcomeException.class,
             () -> repository.complete(payment.paymentId(), DefinitiveOutcome.DECLINED))
@@ -86,10 +85,9 @@ class InMemoryPaymentRepositoryTest {
   @Test
   void unknownIsUncompletedAndHasNoOutgoingDefinitiveTransition() {
     InMemoryPaymentRepository repository = repository();
-    PaymentRecord payment = repository.accept(
+    PaymentRecord payment = repository.admitAndClaim(
         "merchant", "key", command("fp", 10, "GBP")).payment();
-    repository.claimExecution(payment.paymentId());
-    PaymentRecord unknown = repository.markUnknown(payment.paymentId()).payment();
+    PaymentRecord unknown = repository.markUnknown(payment.paymentId());
 
     assertEquals(PaymentStatus.UNKNOWN, unknown.status());
     assertNull(unknown.completedAt());
@@ -101,7 +99,7 @@ class InMemoryPaymentRepositoryTest {
   void unkeyedDefinitivePersistenceRejectsAdmissionAndCreatesCompletedRecord() {
     InMemoryPaymentRepository repository = repository();
     assertThrows(IllegalArgumentException.class,
-        () -> repository.accept("merchant", null, command("fp", 10, "GBP")));
+        () -> repository.admitAndClaim("merchant", null, command("fp", 10, "GBP")));
 
     PaymentRecord stored = repository.saveDefinitive(
         "merchant", command("fp", 10, "GBP"), DefinitiveOutcome.DECLINED);

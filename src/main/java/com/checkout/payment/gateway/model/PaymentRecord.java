@@ -30,6 +30,9 @@ public record PaymentRecord(
     Objects.requireNonNull(status, "status");
     Objects.requireNonNull(createdAt, "createdAt");
     Objects.requireNonNull(updatedAt, "updatedAt");
+    if (status == PaymentStatus.REJECTED) {
+      throw new IllegalArgumentException("Rejected is an API result, not a persisted state");
+    }
     if (updatedAt.isBefore(createdAt)) {
       throw new IllegalArgumentException("updatedAt must not be before createdAt");
     }
