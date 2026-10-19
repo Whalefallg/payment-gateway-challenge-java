@@ -195,4 +195,3 @@ class PaymentV2LiteSafetyTest {
         1, "GBP", "0001", 12, 2099, status, now, now, null);
   }
 }
-

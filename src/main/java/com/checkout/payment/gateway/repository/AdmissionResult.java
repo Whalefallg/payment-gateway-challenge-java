@@ -17,4 +17,3 @@ public record AdmissionResult(Kind kind, PaymentRecord payment) {
     return new AdmissionResult(Kind.CONFLICT, payment);
   }
 }
-

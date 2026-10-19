@@ -185,4 +185,3 @@ public class PaymentGatewayService {
         payment.expiryMonth(), payment.expiryYear(), payment.currency(), payment.amount());
   }
 }
-

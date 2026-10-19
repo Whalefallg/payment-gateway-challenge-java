@@ -16,4 +16,3 @@ public interface PaymentRepository {
   int size();
   void clear();
 }
-

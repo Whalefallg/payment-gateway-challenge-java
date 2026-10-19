@@ -139,4 +139,3 @@ public class InMemoryPaymentRepository implements PaymentRepository {
 
   private record IdempotencyIdentity(String merchantId, String key) {}
 }
-

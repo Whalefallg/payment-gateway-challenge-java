@@ -41,9 +41,9 @@ public record PaymentRecord(
       throw new IllegalArgumentException(
           "completedAt must be present only for a definitive payment outcome");
     }
-    if (completedAt != null && completedAt.isBefore(createdAt)) {
-      throw new IllegalArgumentException("completedAt must not be before createdAt");
+    if (completedAt != null && !completedAt.equals(updatedAt)) {
+      throw new IllegalArgumentException(
+          "A definitive payment must complete at its latest update");
     }
   }
 }
-

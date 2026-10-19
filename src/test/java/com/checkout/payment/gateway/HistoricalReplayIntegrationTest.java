@@ -96,4 +96,3 @@ class HistoricalReplayIntegrationTest {
     @Override public Instant instant() { return instant.get(); }
   }
 }
-

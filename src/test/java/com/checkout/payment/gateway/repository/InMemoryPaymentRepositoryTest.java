@@ -110,6 +110,19 @@ class InMemoryPaymentRepositoryTest {
     assertEquals(1, repository.size());
   }
 
+  @Test
+  void paymentRecordRejectsCompletionTimestampThatDoesNotMatchItsState() {
+    Instant created = Instant.parse("2026-01-01T00:00:00Z");
+    Instant updated = created.plusSeconds(1);
+
+    assertThrows(IllegalArgumentException.class, () -> new PaymentRecord(
+        java.util.UUID.randomUUID(), "merchant", "key", "fingerprint", 10, "GBP", "0001",
+        12, 2030, PaymentStatus.UNKNOWN, created, updated, updated));
+    assertThrows(IllegalArgumentException.class, () -> new PaymentRecord(
+        java.util.UUID.randomUUID(), "merchant", "key", "fingerprint", 10, "GBP", "0001",
+        12, 2030, PaymentStatus.AUTHORIZED, created, updated, created));
+  }
+
   private InMemoryPaymentRepository repository() {
     return new InMemoryPaymentRepository(Clock.fixed(
         Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC));
@@ -119,4 +132,3 @@ class InMemoryPaymentRepositoryTest {
     return new PaymentCommand(fingerprint, amount, currency, "0001", 12, 2030);
   }
 }
-

@@ -17,4 +17,3 @@ public enum DefinitiveOutcome {
     return paymentStatus;
   }
 }
-
