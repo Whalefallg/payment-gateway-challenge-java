@@ -26,7 +26,7 @@ public class InMemoryPaymentRepository implements PaymentRepository {
 
   @Override
   public AdmissionResult admitAndClaim(
-      String merchantId, String idempotencyKey, PaymentCommand command) {
+      String merchantId, String idempotencyKey, PaymentAdmissionCommand command) {
     if (idempotencyKey == null) {
       PaymentRecord created = newRecord(merchantId, null, command, PaymentStatus.IN_FLIGHT);
       payments.put(created.paymentId(), created);
@@ -49,7 +49,7 @@ public class InMemoryPaymentRepository implements PaymentRepository {
   }
 
   private PaymentRecord newRecord(
-      String merchantId, String key, PaymentCommand command, PaymentStatus status) {
+      String merchantId, String key, PaymentAdmissionCommand command, PaymentStatus status) {
     Instant now = clock.instant();
     Instant completedAt = isDefinitive(status) ? now : null;
     return new PaymentRecord(UUID.randomUUID(), merchantId, key, command.requestFingerprint(),

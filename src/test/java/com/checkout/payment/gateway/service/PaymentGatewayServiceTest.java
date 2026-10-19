@@ -18,7 +18,7 @@ import com.checkout.payment.gateway.model.PaymentRecord;
 import com.checkout.payment.gateway.model.PostPaymentRequest;
 import com.checkout.payment.gateway.repository.AdmissionResult;
 import com.checkout.payment.gateway.repository.InMemoryPaymentRepository;
-import com.checkout.payment.gateway.repository.PaymentCommand;
+import com.checkout.payment.gateway.repository.PaymentAdmissionCommand;
 import jakarta.validation.Validator;
 import java.time.Clock;
 import org.junit.jupiter.api.Test;
@@ -34,7 +34,7 @@ class PaymentGatewayServiceTest {
     InMemoryPaymentRepository repository = new InMemoryPaymentRepository(Clock.systemUTC()) {
       @Override
       public AdmissionResult admitAndClaim(
-          String merchantId, String idempotencyKey, PaymentCommand command) {
+          String merchantId, String idempotencyKey, PaymentAdmissionCommand command) {
         AdmissionResult result = super.admitAndClaim(merchantId, idempotencyKey, command);
         admitted.set(result.payment());
         return result;

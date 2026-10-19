@@ -12,7 +12,7 @@ import com.checkout.payment.gateway.model.PaymentRecord;
 import com.checkout.payment.gateway.model.PaymentResponse;
 import com.checkout.payment.gateway.model.PostPaymentRequest;
 import com.checkout.payment.gateway.repository.AdmissionResult;
-import com.checkout.payment.gateway.repository.PaymentCommand;
+import com.checkout.payment.gateway.repository.PaymentAdmissionCommand;
 import com.checkout.payment.gateway.repository.PaymentRepository;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validator;
@@ -167,10 +167,11 @@ public class PaymentGatewayService {
     return value.replaceAll("([a-z])([A-Z]+)", "$1_$2").toLowerCase();
   }
 
-  private PaymentCommand command(PostPaymentRequest request) {
+  private PaymentAdmissionCommand command(PostPaymentRequest request) {
     String pan = request.getCardNumber();
-    return new PaymentCommand(fingerprint.create(request), request.getAmount(), request.getCurrency(),
-        pan.substring(pan.length() - 4), request.getExpiryMonth(), request.getExpiryYear());
+    return new PaymentAdmissionCommand(fingerprint.create(request), request.getAmount(),
+        request.getCurrency(), pan.substring(pan.length() - 4), request.getExpiryMonth(),
+        request.getExpiryYear());
   }
 
   private static PaymentResponse toResponse(PaymentRecord payment) {

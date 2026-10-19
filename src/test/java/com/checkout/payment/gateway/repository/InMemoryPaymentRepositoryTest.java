@@ -32,7 +32,7 @@ class InMemoryPaymentRepositoryTest {
   @Test
   void concurrentAdmitAndClaimHasExactlyOneExecutionOwner() throws Exception {
     InMemoryPaymentRepository repository = repository();
-    PaymentCommand command = command("fingerprint", 1050, "GBP");
+    PaymentAdmissionCommand command = command("fingerprint", 1050, "GBP");
     CountDownLatch ready = new CountDownLatch(16);
     CountDownLatch start = new CountDownLatch(1);
     List<Callable<AdmissionResult>> tasks = new ArrayList<>();
@@ -168,7 +168,7 @@ class InMemoryPaymentRepositoryTest {
     }
   }
 
-  static PaymentCommand command(String fingerprint, int amount, String currency) {
-    return new PaymentCommand(fingerprint, amount, currency, "0001", 12, 2030);
+  static PaymentAdmissionCommand command(String fingerprint, int amount, String currency) {
+    return new PaymentAdmissionCommand(fingerprint, amount, currency, "0001", 12, 2030);
   }
 }

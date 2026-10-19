@@ -1,6 +1,6 @@
 package com.checkout.payment.gateway.repository;
 
-public record PaymentCommand(
+public record PaymentAdmissionCommand(
     String requestFingerprint,
     int amount,
     String currency,
