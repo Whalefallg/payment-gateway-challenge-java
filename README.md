@@ -8,10 +8,10 @@ The application is a small modular monolith with an in-memory repository. Option
 
 Prerequisites: JDK 17, Docker with Compose and a running daemon. The smoke script also requires Bash, Python 3 and curl. Gradle uses the included wrapper; automated tests run without Docker. Ports 8090 (gateway), 8080 (bank) and 2525 (simulator administration) must be available.
 
-The final implementation is on `feature/payment-gateway-v2`; the repository's default `main` branch contains the starter project.
+The final implementation is available on the repository's default `main` branch.
 
 ```bash
-git clone --branch feature/payment-gateway-v2 https://github.com/Whalefallg/payment-gateway-challenge-java.git
+git clone https://github.com/Whalefallg/payment-gateway-challenge-java.git
 cd payment-gateway-challenge-java
 ./gradlew clean build
 docker compose up -d
