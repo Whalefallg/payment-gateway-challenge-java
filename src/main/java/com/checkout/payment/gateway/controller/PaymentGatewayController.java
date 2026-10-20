@@ -34,7 +34,7 @@ public class PaymentGatewayController {
         request, idempotencyKey, merchantId);
     PaymentResponse response = submission.payment();
     URI location = URI.create("/payments/" + response.id());
-    if (submission.kind() == PaymentSubmission.Kind.CREATED) {
+    if (submission.type() == PaymentSubmission.SubmissionType.NEW) {
       return ResponseEntity.created(location).body(response);
     }
     if (response.status() == PaymentStatus.IN_FLIGHT) {

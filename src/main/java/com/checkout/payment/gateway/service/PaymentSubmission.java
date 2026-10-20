@@ -2,14 +2,14 @@ package com.checkout.payment.gateway.service;
 
 import com.checkout.payment.gateway.model.PaymentResponse;
 
-public record PaymentSubmission(Kind kind, PaymentResponse payment) {
-  public enum Kind { CREATED, REPLAYED }
+public record PaymentSubmission(SubmissionType type, PaymentResponse payment) {
+  public enum SubmissionType { NEW, REPLAY }
 
-  public static PaymentSubmission created(PaymentResponse payment) {
-    return new PaymentSubmission(Kind.CREATED, payment);
+  public static PaymentSubmission newPayment(PaymentResponse payment) {
+    return new PaymentSubmission(SubmissionType.NEW, payment);
   }
 
-  public static PaymentSubmission replayed(PaymentResponse payment) {
-    return new PaymentSubmission(Kind.REPLAYED, payment);
+  public static PaymentSubmission replay(PaymentResponse payment) {
+    return new PaymentSubmission(SubmissionType.REPLAY, payment);
   }
 }

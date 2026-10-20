@@ -72,7 +72,7 @@ public class PaymentGatewayService {
         throw conflict(replay);
       }
       LOG.info("Idempotent replay payment_id={} status={}", replay.paymentId(), replay.status());
-      return PaymentSubmission.replayed(toResponse(replay));
+      return PaymentSubmission.replay(toResponse(replay));
     }
     rejectIfInvalid(violations);
 
@@ -82,13 +82,13 @@ public class PaymentGatewayService {
       throw conflict(admission.payment());
     }
     if (admission.kind() == PaymentAdmissionResult.Kind.EXISTING) {
-      return PaymentSubmission.replayed(toResponse(admission.payment()));
+      return PaymentSubmission.replay(toResponse(admission.payment()));
     }
 
     // CREATED is the execution-ownership token. Existing state, including IN_FLIGHT, never is.
     LOG.info("Payment admitted and execution claimed payment_id={}",
         admission.payment().paymentId());
-    return PaymentSubmission.created(toResponse(
+    return PaymentSubmission.newPayment(toResponse(
         executeClaimed(admission.payment().paymentId(), request)));
   }
 
